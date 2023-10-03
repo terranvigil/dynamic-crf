@@ -1,11 +1,8 @@
 # dynamiccrf
 
-
-- ffprobe to get timestamps of keyframes
-- determine sample count and durations
-
 TODO:
 
-## Train models for Anime at 2-3 resolutions
-https://github.com/Netflix/vmaf/blob/master/resource/doc/python.md#train-a-new-model
+1. Need to train VMAF model for Anime, requires manual objective ranking
+2. Need to train models for HD/TV resolutions and phone resolutions
+3. Could be optimized per scene (CRF per scene)
 
