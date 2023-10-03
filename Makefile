@@ -1,0 +1,32 @@
+SHELL := /bin/bash
+
+GOCMD=go
+GOBUILD=$(GOCMD) build
+GOCLEAN=$(GOCMD) clean
+GORUN=$(GOCMD) run
+GOTEST=$(GOCMD) test
+GOINSTALL=$(GOCMD) install
+GOBINPATH=`go env GOPATH`/bin
+GOFUMPTPATH=$(GOBINPATH)/gofumpt
+GOLANGCI_LINT_VER="1.52.2"
+GOFMPT_VER=""
+
+BINARY_NAME=dynamic-crf
+#WEBSERVER=./cmd/http
+#SERVER_PID=server.pid
+APP_IMAGE_NAME=$(BINARY_NAME)-app
+FFMPEG_IMAGE_NAME=$(BINARY_NAME)-ffmpeg
+BENTO4_IMAGE_NAME=$(BINARY_NAME)-bento4
+MEDIAINFO_IMAGE_NAME=$(BINARY_NAME)-mediainfo
+X264_IMAGE_NAME=$(BINARY_NAME)-x264
+X265_IMAGE_NAME=$(BINARY_NAME)-x265
+SVTAV1_IMAGE_NAME=$(BINARY_NAME)-svtav1
+
+run:
+	$(GORUN) main.go
+
+test: 			## Run unit tests
+	$(GOTEST) -v -race -count=1 -parallel=4 -tags=unit ./...
+
+fmt:
+	$(GOFUMPTPATH) -w .
