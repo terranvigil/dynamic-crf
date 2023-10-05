@@ -64,6 +64,7 @@ func main() {
 		VideoBufferSizeKbps: 9000,
 		VideoMinBitrateKbps: 4000,
 		VideoMaxBitrateKbps: 6000,
+		Tune:              "animation",
 	}
 	score, bitrate, size, err := actions.NewVMAFScore(logger, cfg, sourcePath).Run(ctx)
 	if err != nil {

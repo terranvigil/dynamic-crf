@@ -64,6 +64,9 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 			// args = append(args, "-vf", fmt.Sprintf("scale=%d:-2", e.cfg.Width, e.cfg.Height))
 			args = append(args, "-vf", fmt.Sprintf("zscale=%d:%d:filter=spline36", e.cfg.Width, e.cfg.Height))
 		}
+		if e.cfg.Tune != "" {
+			args = append(args, "-tune", e.cfg.Tune)
+		}
 	} else {
 		args = append(args, "-vn")
 	}

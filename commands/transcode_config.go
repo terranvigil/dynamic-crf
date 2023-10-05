@@ -15,4 +15,5 @@ type TranscodeConfig struct {
 	FPSDenominator      int
 	Width               int
 	Height              int
+	Tune                string
 }

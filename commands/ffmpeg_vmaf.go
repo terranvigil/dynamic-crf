@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 
 	"github.com/rs/zerolog"
@@ -20,13 +21,16 @@ type FfmpegVMAF struct {
 	logger           zerolog.Logger
 	referencePath string
 	distortedPath string
+	// 1-10, 1 is slowest, 10 is fastest, tradeoff between speed and accuracy
+	speed		   int
 }
 
-func NewFfmpegVMAF(logger zerolog.Logger, distorted string, reference string) *FfmpegVMAF {
+func NewFfmpegVMAF(logger zerolog.Logger, distorted string, reference string, speed int) *FfmpegVMAF {
 	return &FfmpegVMAF{
 		logger:           logger,
 		distortedPath: distorted,
 		referencePath: reference,
+		speed: speed,
 	}
 }
 
@@ -70,22 +74,32 @@ func (v *FfmpegVMAF) Run(ctx context.Context) (score float64, err error) {
 	distW = distMeta.GetVideoTracks()[0].Width
 	distH = distMeta.GetVideoTracks()[0].Height
 
+	threads := 4
+	if v.speed > 1 {
+		cores := runtime.NumCPU()
+		// TODO could increase relative to speed as well
+		threads = cores - 1
+	}
+
 	args := []string{
 		"-hide_banner",
 		"-i", v.distortedPath,
 		"-i", v.referencePath,
 		"-an",
 	}
+
+	vmaf := fmt.Sprintf("libvmaf='n_threads=%d:n_subsample=%d'", threads, v.speed)
+
 	if refW != distW || refH != distH {
 		// Note there may be cases where it is better to scale the reference to the distorted
 		// resolution, e.g. the referende is 4K and the distorted is 1080p
-		args = append(args, "-filter_complex", fmt.Sprintf("[0:v]zscale=%d:%d:flags=spline36[distorted],[distorted][1:v]libvmaf", refW, refH))
+		args = append(args, "-filter_complex", fmt.Sprintf("[0:v]zscale=%d:%d:flags=spline36[distorted],[distorted][1:v]%s", refW, refH, vmaf))
 	} else {
-		args = append(args, "-lavfi", "libvmaf")
+		args = append(args, "-lavfi", vmaf)
 	}
 	args = append(args, "-f", "null", "-")
 
-	// v.logger.Info().Msgf("ffmpeg args: %v", args)
+	v.logger.Info().Msgf("ffmpeg args: %v", args)
 	v.logger.Info().Msg("running ffmpeg vmaf")
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)

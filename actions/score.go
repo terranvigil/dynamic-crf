@@ -27,11 +27,6 @@ func NewVMAFScore(logger zerolog.Logger, cfg *commands.TranscodeConfig, referenc
 }
 
 func (v *VMAFScore) Run(ctx context.Context) (score float64, averageBitrateKBPS int, streamSizeKB int, err error) {
-	/*transcodeConfig := &commands.TranscodeConfig{
-		VideoCodec: "libx264",
-		VideoCRF: crf,
-	}*/
-
 	var testEncode *os.File
 	if testEncode, err = os.CreateTemp("", "tst_encode*.mp4"); err != nil {
 		err = fmt.Errorf("failed to create temp target encode file, err: %w", err)
@@ -44,7 +39,7 @@ func (v *VMAFScore) Run(ctx context.Context) (score float64, averageBitrateKBPS 
 		return
 	}
 
-	if score, err = commands.NewFfmpegVMAF(v.logger, testEncode.Name(), v.referencePath).Run(ctx); err != nil {
+	if score, err = commands.NewFfmpegVMAF(v.logger, testEncode.Name(), v.referencePath, 5).Run(ctx); err != nil {
 		err = fmt.Errorf("failed to calc vmaf of test output, err: %w", err)
 		return
 	}
