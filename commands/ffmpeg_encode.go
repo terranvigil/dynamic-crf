@@ -35,7 +35,7 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	} else {
 		e.log.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
 	}
-	
+
 	args := []string{
 		"-hide_banner",
 		"-i", e.sourcePath,

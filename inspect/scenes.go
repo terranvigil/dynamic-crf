@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	MinSceneDuration = 2.0
+	MinSceneDuration   = 2.0
 	MaxScenesForSample = 15
 )
 

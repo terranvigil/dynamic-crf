@@ -101,7 +101,7 @@ func (v *FfmpegVMAF) Run(ctx context.Context) (score float64, err error) {
 		scalingFilter += "[1:v]setpts=PTS-STARTPTS[reference];"
 		scalingFilter += "[distorted][reference]" + vmaf
 		args = append(args, "-filter_complex", scalingFilter)
-                                                        
+
 	} else {
 		args = append(args, "-lavfi", vmaf)
 	}

@@ -135,9 +135,9 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 		selected = crfMax
 		vmaf = scores[high]
 		c.logger.Info().Msgf("target vmaf: %.2f is higher than vmaf of %f for max crf: %d, selecting max crf", c.targetVMAF, vmaf, crfMax)
-	
+
 		return
-	}	
+	}
 
 	// interpolated search
 	// from wiki: `int pos = low + (((target - arr[low]) * (high - low)) / (arr[high] - arr[low]));`
