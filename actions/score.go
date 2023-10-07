@@ -14,11 +14,11 @@ import (
 // and return the VMAF score
 type VMAFScore struct {
 	logger          zerolog.Logger
-	transcodeConfig *commands.TranscodeConfig
+	transcodeConfig commands.TranscodeConfig
 	referencePath   string
 }
 
-func NewVMAFScore(logger zerolog.Logger, cfg *commands.TranscodeConfig, referencePath string) *VMAFScore {
+func NewVMAFScore(logger zerolog.Logger, cfg commands.TranscodeConfig, referencePath string) *VMAFScore {
 	return &VMAFScore{
 		logger:          logger,
 		referencePath:   referencePath,

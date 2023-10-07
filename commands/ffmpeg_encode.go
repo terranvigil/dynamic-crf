@@ -9,14 +9,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// FfmpegEncode performs a simple encode given encoding parameters
 type FfmpegEncode struct {
 	log        zerolog.Logger
-	cfg        *TranscodeConfig
+	cfg        TranscodeConfig
 	sourcePath string
 	targetPath string
 }
 
-func NewFfmpegEncode(log zerolog.Logger, source string, target string, cfg *TranscodeConfig) *FfmpegEncode {
+func NewFfmpegEncode(log zerolog.Logger, source string, target string, cfg TranscodeConfig) *FfmpegEncode {
 	return &FfmpegEncode{
 		log:        log,
 		sourcePath: source,
@@ -29,6 +30,12 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	var err error
 	var stderr bytes.Buffer
 
+	if e.cfg.VideoCRF != 0 {
+		e.log.Info().Msgf("running ffmpeg test encode with crf: %d", e.cfg.VideoCRF)
+	} else {
+		e.log.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
+	}
+	
 	args := []string{
 		"-hide_banner",
 		"-i", e.sourcePath,
@@ -53,7 +60,7 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 		if e.cfg.FPSNumerator != 0 && e.cfg.FPSDenominator != 0 {
 			args = append(args, "-r", fmt.Sprintf("%d/%d", e.cfg.FPSNumerator, e.cfg.FPSDenominator))
 		}
-		if e.cfg.Width != 0 && e.cfg.Height != 0 {
+		if e.cfg.Width != 0 || e.cfg.Height != 0 {
 			// preserve aspect ratio if only one dimension is set, additionally use multiples of 2
 			// for codec compatibility
 			if e.cfg.Width == 0 {
@@ -62,7 +69,7 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 				e.cfg.Height = -2
 			}
 			// args = append(args, "-vf", fmt.Sprintf("scale=%d:-2", e.cfg.Width, e.cfg.Height))
-			args = append(args, "-vf", fmt.Sprintf("zscale=%d:%d:filter=spline36", e.cfg.Width, e.cfg.Height))
+			args = append(args, "-vf", fmt.Sprintf("scale=%d:%d:flags=bicubic", e.cfg.Width, e.cfg.Height))
 		}
 		if e.cfg.Tune != "" {
 			args = append(args, "-tune", e.cfg.Tune)
@@ -80,13 +87,8 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	}
 	args = append(args, e.targetPath)
 
-	//e.log.Debug().Msgf("ffmpeg args: %v", args)
+	// e.log.Debug().Msgf("ffmpeg args: %v", args)
 	e.log.Info().Msgf("ffmepg args: %v", args)
-	if e.cfg.VideoCRF != 0 {
-		e.log.Info().Msgf("running ffmpeg test encode with crf: %d", e.cfg.VideoCRF)
-	} else {
-		e.log.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
-	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stderr = &stderr

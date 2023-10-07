@@ -66,7 +66,7 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 	}
 	frames = filtered
 
-	if len(frames) > 10 {
+	if len(frames) > 30 {
 		logger.Info().Msgf("found %d scenes, reducing", len(frames))
 
 		// should already be in time order, but just in case
@@ -76,7 +76,7 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 
 		// we want the most significant scenes
 		sort.SliceStable(frames, func(i, j int) bool {
-			logger.Info().Msgf("score: ", frames[i].GetSceneScore())
+			logger.Debug().Msgf("score: %.2f", frames[i].GetSceneScore())
 			return frames[i].GetSceneScore() < frames[j].GetSceneScore()
 		})
 		frames = frames[:10]
@@ -103,7 +103,7 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 
 	logger.Info().Msgf("found %d scenes", len(scenes))
 	for i, scene := range scenes {
-		logger.Info().Msgf("scene %d, start: %f, dur: %f, score: %f", i, scene.StartPTSSec, scene.Duration, scene.Score)
+		logger.Info().Msgf("scene %d, start: %.2f, dur: %.2f, score: %.2f", i, scene.StartPTSSec, scene.Duration, scene.Score)
 	}
 
 	return scenes, fps, nil

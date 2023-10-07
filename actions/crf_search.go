@@ -16,16 +16,18 @@ import (
 // CrfSearch will perform an interpolation search over CRF values to find the
 // closest match to the target VMAF
 type CrfSearch struct {
-	logger     zerolog.Logger
-	sourcePath string
-	targetVMAF float64
+	logger          zerolog.Logger
+	sourcePath      string
+	targetVMAF      float64
+	transcodeConfig commands.TranscodeConfig
 }
 
-func NewCrfSearch(logger zerolog.Logger, source string, targetVMAF float64) *CrfSearch {
+func NewCrfSearch(logger zerolog.Logger, source string, targetVMAF float64, transcodeConfig commands.TranscodeConfig) *CrfSearch {
 	return &CrfSearch{
-		logger:     logger,
-		sourcePath: source,
-		targetVMAF: targetVMAF,
+		logger:          logger,
+		sourcePath:      source,
+		targetVMAF:      targetVMAF,
+		transcodeConfig: transcodeConfig,
 	}
 }
 
@@ -63,8 +65,8 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	// TODO this needs to be adjusted per codec
 
 	// higher crf correlates to lower quality
-	crfMin := 35
-	crfMax := 6
+	crfMin := 30
+	crfMax := 15
 
 	tolerance := 0.5
 
@@ -78,21 +80,37 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	// if within threshold, return CRF
 	// if not, repeat using interpolated CRF as new min or max
 
-	if scores[low], err = runScore(ctx, c.logger, sampleEncode.Name(), crfMin); err != nil {
+	if scores[low], err = c.runScore(ctx, sampleEncode.Name(), crfMin); err != nil {
 		return
 	}
 	if checkScore(c.logger, scores[low], c.targetVMAF, tolerance, crfMin) {
-		return crfMin, scores[low], nil
+		vmaf = scores[low]
+		selected = crfMin
+		c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
+
+		return
 	}
 
-	if scores[high], err = runScore(ctx, c.logger, sampleEncode.Name(), crfMax); err != nil {
+	if scores[high], err = c.runScore(ctx, sampleEncode.Name(), crfMax); err != nil {
 		return
 	}
 	if checkScore(c.logger, scores[high], c.targetVMAF, tolerance, crfMax) {
-		return crfMax, scores[high], nil
+		vmaf = scores[high]
+		selected = crfMax
+		c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
+
+		return
 	}
 
-	c.logger.Info().Msgf("Initial VMAF range: low: %f, high: %f", scores[low], scores[high])
+	c.logger.Info().Msgf("Initial VMAF range: low: %.2f, high: %.2f", scores[low], scores[high])
+
+	if scores[high] < c.targetVMAF {
+		selected = crfMax
+		vmaf = scores[high]
+		c.logger.Info().Msgf("target vmaf: %.2f is higher than vmaf of %f for max crf: %d, selecting max crf", c.targetVMAF, vmaf, crfMax)
+	
+		return
+	}	
 
 	// interpolated search
 	// from wiki: `int pos = low + (((target - arr[low]) * (high - low)) / (arr[high] - arr[low]));`
@@ -107,7 +125,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 
 		c.logger.Info().Msgf("searching position: %d, crf: %d", curPos, curCRF)
 
-		if scores[curPos], err = runScore(ctx, c.logger, sampleEncode.Name(), curCRF); err != nil {
+		if scores[curPos], err = c.runScore(ctx, sampleEncode.Name(), curCRF); err != nil {
 			return
 		}
 
@@ -126,19 +144,21 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	}
 	selected = curCRF
 	vmaf = scores[curPos]
-	c.logger.Info().Msgf("found vmaf: %f for crf: %d", vmaf, selected)
+	c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
 
 	return
 }
 
-func runScore(ctx context.Context, logger zerolog.Logger, samplePath string, crf int) (float64, error) {
-	score, averageBitrateKBPS, streamSize, err := NewVMAFScore(logger, configForCRF(crf), samplePath).Run(ctx)
+func (c *CrfSearch) runScore(ctx context.Context, samplePath string, crf int) (float64, error) {
+	currentConfig := c.transcodeConfig
+	currentConfig.VideoCRF = crf
+	score, averageBitrateKBPS, streamSize, err := NewVMAFScore(c.logger, currentConfig, samplePath).Run(ctx)
 	if err != nil {
 		return 0, err
 	}
 
 	streamSizeKB := message.NewPrinter(language.English).Sprintf("%d", streamSize)
-	logger.Info().Msgf("score: %f, bitrate: %d, size: %sKB", score, averageBitrateKBPS, streamSizeKB)
+	c.logger.Info().Msgf("score: %.2f, bitrate: %dKbps, size: %sKB", score, averageBitrateKBPS, streamSizeKB)
 
 	return score, nil
 }
@@ -146,15 +166,8 @@ func runScore(ctx context.Context, logger zerolog.Logger, samplePath string, crf
 func checkScore(logger zerolog.Logger, vmaf float64, targetVmaf float64, tolerance float64, crf int) bool {
 	found := math.Abs(vmaf-targetVmaf) < tolerance
 	if found {
-		logger.Info().Msgf("found vmaf: %f for crf: %d", vmaf, crf)
+		logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, crf)
 	}
 
 	return found
-}
-
-func configForCRF(crf int) *commands.TranscodeConfig {
-	return &commands.TranscodeConfig{
-		VideoCodec: "libx264",
-		VideoCRF:   crf,
-	}
 }

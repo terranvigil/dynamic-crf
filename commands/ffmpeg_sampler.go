@@ -35,18 +35,6 @@ func (s *FfmpegSampler) Run(ctx context.Context) error {
 	var err error
 	var stderr bytes.Buffer
 
-	/*
-		args := []string{
-			"-i", "/Users/terran.vigil/go/src/github.com/terranvigil/dynamic-crf/fixtures/media/perseverance_1280.mv4",
-			"-an",
-			"-c:v", "copy",
-			"-filter_complex",
-			"[0:v]trim=start_pts=196096:end_pts=200000,setpts=PTS-STARTPTS[v0];[0:v]trim=start_pts=210000:end_pts=2030000,setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1[out]",
-			"-map", "[out]",
-			"-y", "/Users/terran.vigil/go/src/github.com/terranvigil/dynamic-crf/testo.mp4",
-		}
-	*/
-
 	totalDur := func() float64 {
 		var total float64
 		for _, scene := range s.scenes {
@@ -54,11 +42,11 @@ func (s *FfmpegSampler) Run(ctx context.Context) error {
 		}
 		return total
 	}()
-	s.log.Info().Msgf("running ffmpeg sampler, creating sample of %fs duration", totalDur)
+	s.log.Info().Msgf("running ffmpeg sampler, creating sample of %.2fs duration", totalDur)
 	tempPaths := []string{}
 
 	for i, scene := range s.scenes {
-		s.log.Info().Msgf("scene #%d:, start: %fs, dur: %fs", i+1, scene.StartPTSSec, scene.Duration)
+		s.log.Info().Msgf("scene #%d:, start: %.2fs, dur: %.2fs", i+1, scene.StartPTSSec, scene.Duration)
 
 		f, err := os.CreateTemp("", "smpl_*.ts")
 		if err != nil {
@@ -72,7 +60,7 @@ func (s *FfmpegSampler) Run(ctx context.Context) error {
 			// TODO add this back in to target keyframe before start time
 			//"-ss", strconv.Itoa(r[0]),
 			"-i", s.sourcePath,
-			"-ss", fmt.Sprintf("%f", scene.StartPTSSec),
+			"-ss", fmt.Sprintf("%.2f", scene.StartPTSSec),
 			"-frames:v", fmt.Sprintf("%d", int(s.fps*scene.Duration)),
 			"-c:v", "copy",
 			"-an",

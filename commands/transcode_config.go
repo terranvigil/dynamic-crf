@@ -1,10 +1,10 @@
 package commands
 
 type TranscodeConfig struct {
-	VideoCodec          string
-	AudioCodec          string
-	AudioBitrateKbps    int
-	VideoBitrateKbps    int
+	VideoCodec       string
+	AudioCodec       string
+	AudioBitrateKbps int
+	VideoBitrateKbps int
 	// PLEASE NEVER USE THIS!!!
 	// only for testing the legacy ABR ladder
 	VideoMinBitrateKbps int
