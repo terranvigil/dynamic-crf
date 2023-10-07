@@ -17,7 +17,6 @@ type FfmpegSampler struct {
 	sampleOutputPath string
 	fps              float64
 	scenes           []model.Scene
-	// cfg *TranscodeConfig
 }
 
 func NewFfmpegSampler(log zerolog.Logger, sourcePath string, samplePath string, fps float64, scenes []model.Scene) *FfmpegSampler {
@@ -27,7 +26,6 @@ func NewFfmpegSampler(log zerolog.Logger, sourcePath string, samplePath string, 
 		sampleOutputPath: samplePath,
 		fps:              fps,
 		scenes:           scenes,
-		// cfg: cfg,
 	}
 }
 

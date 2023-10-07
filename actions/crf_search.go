@@ -47,7 +47,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	}
 	defer source.Close()
 
-	if sampleEncode, err = os.CreateTemp("", "sample_*.ts"); err != nil {
+	if sampleEncode, err = os.CreateTemp("", "sample_*.mp4"); err != nil {
 		c.logger.Fatal().Err(err).Msgf("failed to create temp file for encoding sample")
 	}
 	defer os.Remove(sampleEncode.Name())
@@ -65,41 +65,68 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	// TODO this needs to be adjusted per codec
 
 	// higher crf correlates to lower quality
+	crfInitial := 20
 	crfMin := 30
 	crfMax := 15
 
 	tolerance := 0.5
 
-	low := 0
-	high := crfMin - crfMax
-	scores := make([]float64, high+1)
-
+	// get vmaf of initial CRF, where we expect a high score
+	// if initial CRF is lower than target, use for min CRF
+	// else use for max CRF
 	// get vmaf of lowest CRF
 	// get vmaf of highest CRF
 	// calc interpolated next CRF
 	// if within threshold, return CRF
 	// if not, repeat using interpolated CRF as new min or max
 
-	if scores[low], err = c.runScore(ctx, sampleEncode.Name(), crfMin); err != nil {
+	initialScore := 0.0
+	if initialScore, err = c.runScore(ctx, sampleEncode.Name(), crfInitial); err != nil {
 		return
-	}
-	if checkScore(c.logger, scores[low], c.targetVMAF, tolerance, crfMin) {
-		vmaf = scores[low]
-		selected = crfMin
+	} else if checkScore(c.logger, initialScore, c.targetVMAF, tolerance, crfInitial) {
+		vmaf = initialScore
+		selected = crfInitial
 		c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
-
 		return
+	} else if initialScore > c.targetVMAF {
+		crfMax = crfInitial
+	} else {
+		crfMin = crfInitial
 	}
 
-	if scores[high], err = c.runScore(ctx, sampleEncode.Name(), crfMax); err != nil {
-		return
+	low := 0
+	high := crfMin - crfMax
+	scores := make([]float64, high+1)
+	if crfMax == crfInitial {
+		scores[high] = initialScore
+	} else if crfMin == crfInitial {
+		scores[low] = initialScore
 	}
-	if checkScore(c.logger, scores[high], c.targetVMAF, tolerance, crfMax) {
-		vmaf = scores[high]
-		selected = crfMax
-		c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
 
-		return
+	if scores[low] == 0 {
+		if scores[low], err = c.runScore(ctx, sampleEncode.Name(), crfMin); err != nil {
+			return
+		}
+		if checkScore(c.logger, scores[low], c.targetVMAF, tolerance, crfMin) {
+			vmaf = scores[low]
+			selected = crfMin
+			c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
+
+			return
+		}
+	}
+
+	if scores[high] == 0 {
+		if scores[high], err = c.runScore(ctx, sampleEncode.Name(), crfMax); err != nil {
+			return
+		}
+		if checkScore(c.logger, scores[high], c.targetVMAF, tolerance, crfMax) {
+			vmaf = scores[high]
+			selected = crfMax
+			c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
+
+			return
+		}
 	}
 
 	c.logger.Info().Msgf("Initial VMAF range: low: %.2f, high: %.2f", scores[low], scores[high])

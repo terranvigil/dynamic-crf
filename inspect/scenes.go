@@ -15,6 +15,7 @@ import (
 
 const (
 	MinSceneDuration = 2.0
+	MaxScenesForSample = 15
 )
 
 func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string) (scenes []model.Scene, fps float64, err error) {
@@ -66,7 +67,7 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 	}
 	frames = filtered
 
-	if len(frames) > 30 {
+	if len(frames) > MaxScenesForSample {
 		logger.Info().Msgf("found %d scenes, reducing", len(frames))
 
 		// should already be in time order, but just in case
@@ -79,7 +80,7 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 			logger.Debug().Msgf("score: %.2f", frames[i].GetSceneScore())
 			return frames[i].GetSceneScore() < frames[j].GetSceneScore()
 		})
-		frames = frames[:10]
+		frames = frames[:MaxScenesForSample]
 
 		// put them back in time order
 		sort.SliceStable(frames, func(i, j int) bool {
