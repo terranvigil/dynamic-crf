@@ -22,10 +22,10 @@ X264_IMAGE_NAME=$(BINARY_NAME)-x264
 X265_IMAGE_NAME=$(BINARY_NAME)-x265
 SVTAV1_IMAGE_NAME=$(BINARY_NAME)-svtav1
 
-run:
-	$(GORUN) main.go
+build:
+	$(GOBUILD) -o $(BINARY_NAME) -v ./cmd/dynamic_crf.go
 
-test: 			## Run unit tests
+test:
 	$(GOTEST) -v -race -count=1 -parallel=4 -tags=unit ./...
 
 fmt:

@@ -12,7 +12,7 @@ If we can trade off some accuracy, particularly in early part of the search, we 
 2. Select a max and min CRF range we will search.
 3. Rather than score the entire title, generate a sample containing a representative selection of parts of scenes as our reference.
 4. Begin the search by finding the VMAF values of the min and max CRF values.
-5. Continue using an interpolation search, described [here](hhttps://www.geeksforgeeks.org/g-fact-84/), until we find a VMAF value within our target threshold or if we get the same CRF chosen more than once. The latter scenario occurs if we're as close as we are going to get to the target.
+5. Continue using an interpolation search, described [here](https://www.geeksforgeeks.org/g-fact-84/), until we find a VMAF value within our target threshold or if we get the same CRF chosen more than once. The latter scenario occurs if we're as close as we are going to get to the target.
 6. In early interations of the search, use a decreasing number of skipped frames as the speed vs trade-off is tolerable. 
 
 ### Models
