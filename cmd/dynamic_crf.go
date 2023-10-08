@@ -32,7 +32,7 @@ func main() {
 		codec                        string
 		width, height                int
 		bitrateKbps                  int
-		maxBitrateKbps               int
+		minBitrateKbps, maxBitrateKbps               int
 		bufferSizeKbps               int
 		tune                         string
 	)
@@ -60,6 +60,8 @@ func main() {
 	flag.IntVar(&maxBitrateKbps, "mb", 0, "limit peak bitrate of output video")
 	flag.IntVar(&bufferSizeKbps, "buffersize", 0, "hrd buffer size of output video")
 	flag.IntVar(&bufferSizeKbps, "bs", 0, "hrd buffer size of output video")
+	// if set, forces CBR - that's bad
+	flag.IntVar(&minBitrateKbps, "minbitrate", 0, "limit minimum bitrate of output video")
 	flag.StringVar(&tune, "tune", "", "tune flag for encoder: animation, film, grain, psnr, ssim")
 	flag.StringVar(&tune, "t", "", "tune flag for encoder: animation, film, grain, psnr, ssim")
 
@@ -104,6 +106,8 @@ func main() {
 		VideoCodec:          codec,
 		Width:               width,
 		Height:              height,
+		VideoBitrateKbps:    bitrateKbps,
+		VideoMinBitrateKbps: minBitrateKbps,
 		VideoMaxBitrateKbps: maxBitrateKbps,
 		VideoBufferSizeKbps: bufferSizeKbps,
 		Tune:                tune,
