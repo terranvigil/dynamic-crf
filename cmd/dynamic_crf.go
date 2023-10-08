@@ -10,8 +10,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/terranvigil/dynamic-crf/actions"
 	"github.com/terranvigil/dynamic-crf/commands"
-	//"golang.org/x/text/language"
-	//"golang.org/x/text/message"
 )
 
 // TODO:
@@ -98,7 +96,7 @@ func main() {
 		logger.Fatal().Msg("invalid tune value")
 	}
 
-	// TODO need a better way to cancel this if not progressing
+	// TODO cancel if not progressing, can monitor ffmpeg progress
 	ctx := context.Background()
 	var err error
 
