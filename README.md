@@ -25,7 +25,22 @@ Typically, there are three model types trained: 4K, HD and Phone
 - 95 should be nearly indistinguishable from the reference
 - Anything over 90 should look good
 
-TODO:
+### Building
+
+`make build`
+
+### Examples
+
+* Perform an optimized encode using calculated CRF:
+`dynamic-crf -i source.mp4 -o optimized.mp4 -a optimize -h 1080 -mb 12000 -bs 48000 -maxcrf 15`
+
+* Search for the best CRF given a source and encoding settings:
+`dynamic-crf -i source.mp4 -a optimize -h 720 -mb 6000 -bs 24000 -t animation -maxcrf 15`
+
+* Run a test encode given a source and encoding settings:
+`dynamic-crf -i source.mp4 -a search -h 720 -mb 6000 -bs 24000`
+
+### TODO
 
 1. Need to train VMAF model for Anime, requires manual objective ranking
 2. Need to train models for HD/TV resolutions and phone resolutions
@@ -33,8 +48,7 @@ TODO:
 4. Add mode to run faster VMAF, skipping frames
 5. Parallelize
 6. Per-scene encoding
-7. Test 2-pass CRF
-8. Add ability to detect scene changes when there is a transition such as a fade
+7. Add ability to detect scene changes when there is a transition such as a fade
 
 ## Test Sources for Training Models
 
