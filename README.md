@@ -45,10 +45,8 @@ Typically, there are three model types trained: 4K, HD and Phone
 1. Need to train VMAF model for Anime, requires manual objective ranking
 2. Need to train models for HD/TV resolutions and phone resolutions
 3. Could be optimized per scene (CRF per scene)
-4. Add mode to run faster VMAF, skipping frames
-5. Parallelize
-6. Per-scene encoding
-7. Add ability to detect scene changes when there is a transition such as a fade
+4. Parallelize
+5. Add ability to detect scene changes when there is a transition such as a fade
 
 ## Test Sources for Training Models
 

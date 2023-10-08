@@ -139,7 +139,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 
 	// interpolated search
 	// from wiki: `int pos = low + (((target - arr[low]) * (high - low)) / (arr[high] - arr[low]));`
-	// TODO: vmaf is not linear, it appears to drop off as 10log(crf, need to adjust formula
+	// TODO: vmaf is not linear, adjust search
 	var lastPos, curPos, curCRF int
 	for low <= high && c.targetVMAF >= scores[low] && c.targetVMAF <= scores[high] {
 		curPos = low + int(math.Round((((c.targetVMAF - scores[low]) * float64(high-low)) / (scores[high] - scores[low]))))

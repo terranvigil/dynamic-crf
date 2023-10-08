@@ -18,29 +18,23 @@ import (
 // -- add vmaf models to project
 // -- select vmaf model based on resolution
 
-// vmaf of 93 is generally considered "good enough"
-// nobody has produced a trained vmaf model for anime
-// we should train our own models, SD and HD resolutions (phone and TV)
-// a CRF of 23 is also generally considered "good enough"
-// we probably want something closer to 21 for anime, capping using VBV/HRD
-
 func main() {
 	zerolog.TimeFieldFormat = time.RFC3339Nano
 	logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
 	logger = logger.Level(zerolog.InfoLevel)
 
 	var (
-		action                  string
+		action                       string
 		maxCRF, minCRF, initCRF, crf int
-		searchTolerance         float64
-		sourcePath, targetPath  string
-		targetVMAF              float64
-		codec                   string
-		width, height           int
-		bitrateKbps 		   int
-		maxBitrateKbps          int
-		bufferSizeKbps          int
-		tune                    string
+		searchTolerance              float64
+		sourcePath, targetPath       string
+		targetVMAF                   float64
+		codec                        string
+		width, height                int
+		bitrateKbps                  int
+		maxBitrateKbps               int
+		bufferSizeKbps               int
+		tune                         string
 	)
 
 	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode")

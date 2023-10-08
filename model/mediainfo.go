@@ -268,7 +268,6 @@ func (mt *MediaInfoTrack) GetType() TrackType {
 	case MediaInfoTrackTypeAudio:
 		return TrackTypeAudio
 	case MediaInfoTrackTypeText:
-		// TODO differentiate between subtitles and closed captions
 		return TrackTypeCaption
 	case MediaInfoTrackTypeImage:
 		return TrackTypeImage
