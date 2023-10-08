@@ -19,14 +19,22 @@ type CrfSearch struct {
 	logger          zerolog.Logger
 	sourcePath      string
 	targetVMAF      float64
+	crfInitial      int
+	crfMin          int
+	crfMax          int
+	tolerance       float64
 	transcodeConfig commands.TranscodeConfig
 }
 
-func NewCrfSearch(logger zerolog.Logger, source string, targetVMAF float64, transcodeConfig commands.TranscodeConfig) *CrfSearch {
+func NewCrfSearch(logger zerolog.Logger, source string, targetVMAF float64, crfInitial int, crfMin int, crfMax int, tolerance float64, transcodeConfig commands.TranscodeConfig) *CrfSearch {
 	return &CrfSearch{
 		logger:          logger,
 		sourcePath:      source,
 		targetVMAF:      targetVMAF,
+		crfInitial:      crfInitial,
+		crfMin:          crfMin,
+		crfMax:          crfMax,
+		tolerance:       tolerance,
 		transcodeConfig: transcodeConfig,
 	}
 }
@@ -64,13 +72,6 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 
 	// TODO this needs to be adjusted per codec
 
-	// higher crf correlates to lower quality
-	crfInitial := 20
-	crfMin := 30
-	crfMax := 15
-
-	tolerance := 0.5
-
 	// get vmaf of initial CRF, where we expect a high score
 	// if initial CRF is lower than target, use for min CRF
 	// else use for max CRF
@@ -81,50 +82,48 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	// if not, repeat using interpolated CRF as new min or max
 
 	initialScore := 0.0
-	if initialScore, err = c.runScore(ctx, sampleEncode.Name(), crfInitial); err != nil {
+	if initialScore, err = c.runScore(ctx, sampleEncode.Name(), c.crfInitial); err != nil {
 		return
-	} else if checkScore(c.logger, initialScore, c.targetVMAF, tolerance, crfInitial) {
+	} else if checkScore(c.logger, initialScore, c.targetVMAF, c.tolerance, c.crfInitial) {
 		vmaf = initialScore
-		selected = crfInitial
+		selected = c.crfInitial
 		c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
 		return
 	} else if initialScore > c.targetVMAF {
-		crfMax = crfInitial
+		c.crfMax = c.crfInitial
 	} else {
-		crfMin = crfInitial
+		c.crfMin = c.crfInitial
 	}
 
 	low := 0
-	high := crfMin - crfMax
+	high := c.crfMin - c.crfMax
 	scores := make([]float64, high+1)
-	if crfMax == crfInitial {
+	if c.crfMax == c.crfInitial {
 		scores[high] = initialScore
-	} else if crfMin == crfInitial {
+	} else if c.crfMin == c.crfInitial {
 		scores[low] = initialScore
 	}
 
 	if scores[low] == 0 {
-		if scores[low], err = c.runScore(ctx, sampleEncode.Name(), crfMin); err != nil {
+		if scores[low], err = c.runScore(ctx, sampleEncode.Name(), c.crfMin); err != nil {
 			return
 		}
-		if checkScore(c.logger, scores[low], c.targetVMAF, tolerance, crfMin) {
+		if checkScore(c.logger, scores[low], c.targetVMAF, c.tolerance, c.crfMin) {
 			vmaf = scores[low]
-			selected = crfMin
+			selected = c.crfMin
 			c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
-
 			return
 		}
 	}
 
 	if scores[high] == 0 {
-		if scores[high], err = c.runScore(ctx, sampleEncode.Name(), crfMax); err != nil {
+		if scores[high], err = c.runScore(ctx, sampleEncode.Name(), c.crfMax); err != nil {
 			return
 		}
-		if checkScore(c.logger, scores[high], c.targetVMAF, tolerance, crfMax) {
+		if checkScore(c.logger, scores[high], c.targetVMAF, c.tolerance, c.crfMax) {
 			vmaf = scores[high]
-			selected = crfMax
+			selected = c.crfMax
 			c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
-
 			return
 		}
 	}
@@ -132,10 +131,9 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	c.logger.Info().Msgf("Initial VMAF range: low: %.2f, high: %.2f", scores[low], scores[high])
 
 	if scores[high] < c.targetVMAF {
-		selected = crfMax
+		selected = c.crfMax
 		vmaf = scores[high]
-		c.logger.Info().Msgf("target vmaf: %.2f is higher than vmaf of %f for max crf: %d, selecting max crf", c.targetVMAF, vmaf, crfMax)
-
+		c.logger.Info().Msgf("target vmaf: %.2f is higher than vmaf of %f for max crf: %d, selecting max crf", c.targetVMAF, vmaf, c.crfMax)
 		return
 	}
 
@@ -148,7 +146,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 		if curPos == lastPos {
 			break
 		}
-		curCRF = crfMin - curPos
+		curCRF = c.crfMin - curPos
 
 		c.logger.Info().Msgf("searching position: %d, crf: %d", curPos, curCRF)
 
@@ -156,7 +154,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 			return
 		}
 
-		if checkScore(c.logger, scores[curPos], c.targetVMAF, tolerance, curCRF) {
+		if checkScore(c.logger, scores[curPos], c.targetVMAF, c.tolerance, curCRF) {
 			break
 		}
 
@@ -191,10 +189,5 @@ func (c *CrfSearch) runScore(ctx context.Context, samplePath string, crf int) (f
 }
 
 func checkScore(logger zerolog.Logger, vmaf float64, targetVmaf float64, tolerance float64, crf int) bool {
-	found := math.Abs(vmaf-targetVmaf) < tolerance
-	if found {
-		logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, crf)
-	}
-
-	return found
+	return math.Abs(vmaf-targetVmaf) < tolerance
 }

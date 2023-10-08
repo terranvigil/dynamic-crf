@@ -2,24 +2,34 @@ package actions
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/rs/zerolog"
 	"github.com/terranvigil/dynamic-crf/commands"
+	"github.com/terranvigil/dynamic-crf/model"
 )
 
 type OptimizedEncoded struct {
 	logger          zerolog.Logger
 	transcodeConfig commands.TranscodeConfig
 	targetVMAF      float64
+	crfInitial      int
+	crfMin          int
+	crfMax          int
+	tolerance       float64
 	sourcePath      string
 	targetPath      string
 }
 
-func NewOptimizedEncoded(logger zerolog.Logger, cfg commands.TranscodeConfig, targetVMAF float64, source string, target string) *OptimizedEncoded {
+func NewOptimizedEncoded(logger zerolog.Logger, cfg commands.TranscodeConfig, source string, target string, targetVMAF float64, crfInitial int, crfMin int, crfMax int, tolerance float64) *OptimizedEncoded {
 	return &OptimizedEncoded{
 		logger:          logger,
 		transcodeConfig: cfg,
 		targetVMAF:      targetVMAF,
+		crfInitial:      crfInitial,
+		crfMin:          crfMin,
+		crfMax:          crfMax,
+		tolerance:       tolerance,
 		sourcePath:      source,
 		targetPath:      target,
 	}
@@ -30,7 +40,7 @@ func (e *OptimizedEncoded) Run(ctx context.Context) error {
 	var err error
 	var crf int
 	var vmaf float64
-	search := NewCrfSearch(e.logger, e.sourcePath, e.targetVMAF, e.transcodeConfig)
+	search := NewCrfSearch(e.logger, e.sourcePath, e.targetVMAF, e.crfInitial, e.crfMin, e.crfMax, e.tolerance, e.transcodeConfig)
 	if crf, vmaf, err = search.Run(ctx); err != nil {
 		e.logger.Fatal().Err(err).Msg("failed to run crf search")
 	}
@@ -44,7 +54,16 @@ func (e *OptimizedEncoded) Run(ctx context.Context) error {
 	if vmaf, err = commands.NewFfmpegVMAF(e.logger, e.targetPath, e.sourcePath, 5).Run(ctx); err != nil {
 		return err
 	}
-	e.logger.Info().Msgf("Done: Optimized encode with crf: %d, score: %.2f", crf, vmaf)
+
+	var metadata *model.MediaInfo
+	if metadata, err = commands.NewMediaInfo(e.logger, e.targetPath).Run(ctx); err != nil {
+		return fmt.Errorf("failed to get mediainfo of test output, err: %w", err)
+	}
+
+	averageBitrateKBPS := metadata.GetVideoTracks()[0].BitRate / 1000
+	streamSizeMB := metadata.GetVideoTracks()[0].StreamSize / 1000000
+
+	e.logger.Info().Msgf("Done: Optimized encode with crf: %d, score: %.2f, avg bitrate: %dKbps, stream size: %dM", crf, vmaf, averageBitrateKBPS, streamSizeMB)
 
 	return nil
 }

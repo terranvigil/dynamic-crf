@@ -30,17 +30,26 @@ func main() {
 	logger = logger.Level(zerolog.InfoLevel)
 
 	var (
-		action                 string
-		sourcePath, targetPath string
-		targetVMAF             float64
-		codec                  string
-		width, height          int
-		maxBitrateKbps         int
-		bufferSizeKbps         int
-		tune                   string
+		action                  string
+		maxCRF, minCRF, initCRF, crf int
+		searchTolerance         float64
+		sourcePath, targetPath  string
+		targetVMAF              float64
+		codec                   string
+		width, height           int
+		bitrateKbps 		   int
+		maxBitrateKbps          int
+		bufferSizeKbps          int
+		tune                    string
 	)
 
 	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode")
+	flag.IntVar(&crf, "crf", 0, "crf value to use for encode action")
+	flag.IntVar(&bitrateKbps, "bitrate", 0, "bitrate value to use for encode action")
+	flag.IntVar(&maxCRF, "maxcrf", 15, "maximum crf value to search, higher value == lower quality")
+	flag.IntVar(&minCRF, "mincrf", 30, "minimum crf value to search, higher value == lower quality")
+	flag.IntVar(&initCRF, "initialcrf", 20, "initial crf value to search")
+	flag.Float64Var(&searchTolerance, "tolerance", 0.5, "tolerance for search")
 	flag.StringVar(&action, "a", "", "action to perform: optimize, encode")
 	flag.StringVar(&sourcePath, "input", "", "path to input file")
 	flag.StringVar(&sourcePath, "i", "", "path to input file")
@@ -66,11 +75,25 @@ func main() {
 		flag.Usage()
 		logger.Fatal().Msg("invalid action")
 	}
+	if action == "encode" {
+		if bitrateKbps == 0 && crf == 0 {
+			flag.Usage()
+			logger.Fatal().Msg("bitrate or crf required for encode action")
+		}
+	} else if crf != 0 || bitrateKbps != 0 {
+		flag.Usage()
+		logger.Fatal().Msg("bitrate and crf not allowed for optimize or search actions")
+	}
 	if sourcePath == "" {
 		flag.Usage()
 		logger.Fatal().Msg("source path required")
 	}
-	if targetPath == "" || !strings.HasSuffix(targetPath, ".mp4") {
+	if action == "search" {
+		if targetPath != "" {
+			flag.Usage()
+			logger.Fatal().Msg("target path not allowed for search action")
+		}
+	} else if targetPath == "" || !strings.HasSuffix(targetPath, ".mp4") {
 		flag.Usage()
 		logger.Fatal().Msg("target path of {name}.mp4 required")
 	}
@@ -94,17 +117,22 @@ func main() {
 
 	switch action {
 	case "optimize":
-		if err = actions.NewOptimizedEncoded(logger, cfg, targetVMAF, sourcePath, targetPath).Run(ctx); err != nil {
+		if err = actions.NewOptimizedEncoded(logger, cfg, sourcePath, targetPath, targetVMAF, initCRF, minCRF, maxCRF, searchTolerance).Run(ctx); err != nil {
 			logger.Fatal().Err(err).Msg("failed to run optimized encode")
 		}
 	case "search":
-		score, bitrate, size, err := actions.NewVMAFScore(logger, cfg, sourcePath).Run(ctx)
-		if err != nil {
-			logger.Fatal().Err(err).Msg("failed to run vmaf score")
+		var selectedCRF int
+		var vmaf float64
+		if selectedCRF, vmaf, err = actions.NewCrfSearch(logger, sourcePath, targetVMAF, initCRF, minCRF, maxCRF, searchTolerance, cfg).Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msg("failed to run crf search")
 		}
-		logger.Info().Msgf("Done: Found score: %.2f, bitrate: %dKbps, size: %dMB", score, bitrate, size/1000)
+		logger.Info().Msgf("Done: Found crf: %d, score: %.2f", selectedCRF, vmaf)
+	case "encode":
+		if err = commands.NewFfmpegEncode(logger, sourcePath, targetPath, cfg).Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msg("failed to run encode")
+		}
 	case "default":
-		logger.Fatal().Msg("no action specified")
+		logger.Fatal().Msg("invalid action specified")
 	}
 
 	os.Exit(0)
