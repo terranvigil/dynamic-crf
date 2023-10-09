@@ -50,7 +50,8 @@ Typically, there are three model types trained: 4K, HD and Phone
 
 ## Test Sources for Training Models
 
-- https://media.xiph.org/video/derf/
+- https://4kmedia.org/
+- https://media.xiph.org/video/
 
 ## Related Repositories
 

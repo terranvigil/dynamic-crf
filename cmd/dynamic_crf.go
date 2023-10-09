@@ -22,17 +22,17 @@ func main() {
 	logger = logger.Level(zerolog.InfoLevel)
 
 	var (
-		action                       string
-		maxCRF, minCRF, initCRF, crf int
-		searchTolerance              float64
-		sourcePath, targetPath       string
-		targetVMAF                   float64
-		codec                        string
-		width, height                int
-		bitrateKbps                  int
-		minBitrateKbps, maxBitrateKbps               int
-		bufferSizeKbps               int
-		tune                         string
+		action                         string
+		maxCRF, minCRF, initCRF, crf   int
+		searchTolerance                float64
+		sourcePath, targetPath         string
+		targetVMAF                     float64
+		codec                          string
+		width, height                  int
+		bitrateKbps                    int
+		minBitrateKbps, maxBitrateKbps int
+		bufferSizeKbps                 int
+		tune                           string
 	)
 
 	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode")
