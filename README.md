@@ -76,5 +76,6 @@ Typically, there are three model types trained: 4K, HD and Phone
 - https://blog.twitter.com/engineering/en_us/topics/infrastructure/2020/introducing-vmaf-percentiles-for-video-quality-measurements
 - https://kokomins.wordpress.com/2019/10/10/anime-encoding-guide-for-x265-and-why-to-never-use-flac/
 - https://github.com/Netflix/vmaf/blob/master/resource/doc/ffmpeg.md
-https://www.streamingmedia.com/Articles/ReadArticle.aspx?ArticleID=139246
+- https://www.streamingmedia.com/Articles/ReadArticle.aspx?ArticleID=139246
 - https://www.mux.com/blog/instant-per-title-encoding
+- https://netflixtechblog.com/cambi-a-banding-artifact-detector-96777ae12fe2
