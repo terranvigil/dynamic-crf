@@ -35,10 +35,10 @@ Typically, there are three model types trained: 4K, HD and Phone
 `dynamic-crf -i source.mp4 -o optimized.mp4 -a optimize -h 1080 -mb 12000 -bs 48000 -maxcrf 15`
 
 * Search for the best CRF given a source and encoding settings:<br />
-`dynamic-crf -i source.mp4 -a optimize -h 720 -mb 6000 -bs 24000 -t animation -maxcrf 15`
+`dynamic-crf -i source.mp4 -a search -h 720 -mb 6000 -bs 24000 -t animation -maxcrf 15`
 
 * Run a test encode given a source and encoding settings:<br />
-`dynamic-crf -i source.mp4 -a search -h 720 -mb 6000 -bs 24000`
+`dynamic-crf -i source.mp4 -a encode -h 720 -mb 6000 -bs 24000`
 
 ### TODO
 

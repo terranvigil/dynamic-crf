@@ -30,10 +30,12 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	var err error
 	var stderr bytes.Buffer
 
-	if e.cfg.VideoCRF != 0 {
+	if e.cfg.VideoCRF > 0 {
 		e.log.Info().Msgf("running ffmpeg test encode with crf: %d", e.cfg.VideoCRF)
-	} else {
+	} else if e.cfg.VideoBitrateKbps > 0 {
 		e.log.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
+	} else {
+		e.log.Fatal().Msg("bitrate or crf required for encode action")
 	}
 
 	args := []string{
@@ -63,17 +65,21 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 		if e.cfg.Width != 0 || e.cfg.Height != 0 {
 			// preserve aspect ratio if only one dimension is set, additionally use multiples of 2
 			// for codec compatibility
+			// TODO check what the dimensions will be chosen by ffmpeg as we may be able to skip
+			//   this step if they are equivalent and the source is not anymorphic
 			if e.cfg.Width == 0 {
 				e.cfg.Width = -2
 			} else if e.cfg.Height == 0 {
 				e.cfg.Height = -2
 			}
-			// args = append(args, "-vf", fmt.Sprintf("scale=%d:-2", e.cfg.Width, e.cfg.Height))
 			args = append(args, "-vf", fmt.Sprintf("scale=%d:%d:flags=bicubic", e.cfg.Width, e.cfg.Height))
 		}
 		if e.cfg.Tune != "" {
 			args = append(args, "-tune", e.cfg.Tune)
 		}
+		// TODO if we're trying to get an accurate VMAF score, disable psycho-visual optimizations since
+		//   they increase the difference between source and output in order to improve perceived quality
+		// -tune psnr
 	} else {
 		args = append(args, "-vn")
 	}

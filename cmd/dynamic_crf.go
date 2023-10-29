@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -36,20 +37,20 @@ func main() {
 	)
 
 	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode")
+	flag.StringVar(&action, "a", "", "action to perform: optimize, encode")
 	flag.IntVar(&crf, "crf", 0, "crf value to use for encode action")
 	flag.IntVar(&bitrateKbps, "bitrate", 0, "bitrate value to use for encode action")
 	flag.IntVar(&maxCRF, "maxcrf", 15, "maximum crf value to search, higher value == lower quality")
 	flag.IntVar(&minCRF, "mincrf", 30, "minimum crf value to search, higher value == lower quality")
 	flag.IntVar(&initCRF, "initialcrf", 20, "initial crf value to search")
 	flag.Float64Var(&searchTolerance, "tolerance", 0.5, "tolerance for search")
-	flag.StringVar(&action, "a", "", "action to perform: optimize, encode")
 	flag.StringVar(&sourcePath, "input", "", "path to input file")
 	flag.StringVar(&sourcePath, "i", "", "path to input file")
 	flag.StringVar(&targetPath, "output", "", "path to output file")
 	flag.StringVar(&targetPath, "o", "", "path to output file")
 	flag.Float64Var(&targetVMAF, "targetvmaf", 93.0, "target vmaf score")
 	flag.StringVar(&codec, "codec", "libx264", "video codec to use")
-	flag.StringVar(&codec, "c", "libx264", "video codec to use")
+	// flag.StringVar(&codec, "c", "libx264", "video codec to use")
 	flag.IntVar(&width, "width", 0, "width of output video")
 	flag.IntVar(&width, "w", 0, "width of output video")
 	flag.IntVar(&height, "height", 0, "height of output video")
@@ -70,11 +71,11 @@ func main() {
 		logger.Fatal().Msg("invalid action")
 	}
 	if action == "encode" {
-		if bitrateKbps == 0 && crf == 0 {
+		if bitrateKbps <= 0 && crf <= 0 {
 			flag.Usage()
 			logger.Fatal().Msg("bitrate or crf required for encode action")
 		}
-	} else if crf != 0 || bitrateKbps != 0 {
+	} else if crf > 0 || bitrateKbps > 0 {
 		flag.Usage()
 		logger.Fatal().Msg("bitrate and crf not allowed for optimize or search actions")
 	}
@@ -104,6 +105,7 @@ func main() {
 		VideoCodec:          codec,
 		Width:               width,
 		Height:              height,
+		VideoCRF:            crf,
 		VideoBitrateKbps:    bitrateKbps,
 		VideoMinBitrateKbps: minBitrateKbps,
 		VideoMaxBitrateKbps: maxBitrateKbps,
@@ -127,6 +129,17 @@ func main() {
 		if err = commands.NewFfmpegEncode(logger, sourcePath, targetPath, cfg).Run(ctx); err != nil {
 			logger.Fatal().Err(err).Msg("failed to run encode")
 		}
+		var score float64
+		if score, err = commands.NewFfmpegVMAF(logger, sourcePath, targetPath, 5).Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msgf("failed to calc vmaf of test output, err: %v", err)
+		}
+		var encodeType string
+		if crf > 0 {
+			encodeType = fmt.Sprintf("crf: %d", crf)
+		} else {
+			encodeType = fmt.Sprintf("bitrate: %d", bitrateKbps)
+		}
+		logger.Info().Msgf("Done: Encode with %s, score: %.2f", encodeType, score)
 	case "default":
 		logger.Fatal().Msg("invalid action specified")
 	}
