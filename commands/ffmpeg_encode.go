@@ -5,21 +5,22 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 
 	"github.com/rs/zerolog"
 )
 
 // FfmpegEncode performs a simple encode given encoding parameters
 type FfmpegEncode struct {
-	log        zerolog.Logger
+	logger     zerolog.Logger
 	cfg        TranscodeConfig
 	sourcePath string
 	targetPath string
 }
 
-func NewFfmpegEncode(log zerolog.Logger, source string, target string, cfg TranscodeConfig) *FfmpegEncode {
+func NewFfmpegEncode(logger zerolog.Logger, source string, target string, cfg TranscodeConfig) *FfmpegEncode {
 	return &FfmpegEncode{
-		log:        log,
+		logger:     logger,
 		sourcePath: source,
 		targetPath: target,
 		cfg:        cfg,
@@ -31,11 +32,11 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	var stderr bytes.Buffer
 
 	if e.cfg.VideoCRF > 0 {
-		e.log.Info().Msgf("running ffmpeg test encode with crf: %d", e.cfg.VideoCRF)
+		e.logger.Info().Msgf("running ffmpeg test encode with crf: %d", e.cfg.VideoCRF)
 	} else if e.cfg.VideoBitrateKbps > 0 {
-		e.log.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
+		e.logger.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
 	} else {
-		e.log.Fatal().Msg("bitrate or crf required for encode action")
+		e.logger.Fatal().Msg("bitrate or crf required for encode action")
 	}
 
 	args := []string{
@@ -48,7 +49,7 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 		if e.cfg.VideoBitrateKbps != 0 {
 			args = append(args, "-b:v", fmt.Sprintf("%dk", e.cfg.VideoBitrateKbps))
 		} else if e.cfg.VideoCRF != 0 {
-			args = append(args, "-crf", fmt.Sprintf("%d", e.cfg.VideoCRF))
+			args = append(args, "-crf", strconv.Itoa(e.cfg.VideoCRF))
 		}
 		if e.cfg.VideoMaxBitrateKbps != 0 {
 			args = append(args, "-maxrate", fmt.Sprintf("%dk", e.cfg.VideoMaxBitrateKbps))
@@ -62,17 +63,18 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 		if e.cfg.FPSNumerator != 0 && e.cfg.FPSDenominator != 0 {
 			args = append(args, "-r", fmt.Sprintf("%d/%d", e.cfg.FPSNumerator, e.cfg.FPSDenominator))
 		}
+
 		if e.cfg.Width != 0 || e.cfg.Height != 0 {
 			// preserve aspect ratio if only one dimension is set, additionally use multiples of 2
 			// for codec compatibility
 			// TODO check what the dimensions will be chosen by ffmpeg as we may be able to skip
 			//   this step if they are equivalent and the source is not anymorphic
 			if e.cfg.Width == 0 {
-				e.cfg.Width = -2
+				e.cfg.Width = -2 //nolint:mnd
 			} else if e.cfg.Height == 0 {
-				e.cfg.Height = -2
+				e.cfg.Height = -2 //nolint:mnd
 			}
-			args = append(args, "-vf", fmt.Sprintf("scale=%d:%d:flags=bicubic", e.cfg.Width, e.cfg.Height))
+			args = append(args, "-filter:v", fmt.Sprintf("[in]scale=%d:%d:flags=lanczos[out]", e.cfg.Width, e.cfg.Height))
 		}
 		if e.cfg.Tune != "" {
 			args = append(args, "-tune", e.cfg.Tune)
@@ -93,8 +95,7 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	}
 	args = append(args, e.targetPath)
 
-	// e.log.Debug().Msgf("ffmpeg args: %v", args)
-	e.log.Info().Msgf("ffmepg args: %v", args)
+	e.logger.Info().Msgf("ffmpeg args: %v", args)
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stderr = &stderr

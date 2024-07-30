@@ -1,6 +1,6 @@
 module github.com/terranvigil/dynamic-crf
 
-go 1.20
+go 1.22.5
 
 require (
 	github.com/rs/zerolog v1.29.1

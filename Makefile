@@ -8,7 +8,7 @@ GOTEST=$(GOCMD) test
 GOINSTALL=$(GOCMD) install
 GOBINPATH=`go env GOPATH`/bin
 GOFUMPTPATH=$(GOBINPATH)/gofumpt
-GOLANGCI_LINT_VER="1.52.2"
+GOLANGCI_LINT_VER="1.59.1"
 GOFMPT_VER=""
 
 BINARY_NAME=dynamic-crf
@@ -22,9 +22,16 @@ SVTAV1_IMAGE_NAME=$(BINARY_NAME)-svtav1
 
 build:
 	$(GOBUILD) -o $(BINARY_NAME) -v ./cmd/dynamic_crf.go
+	chmod +x $(BINARY_NAME)
 
 test:
 	$(GOTEST) -v -race -count=1 -parallel=4 -tags=unit ./...
 
 fmt:
 	$(GOFUMPTPATH) -w .
+
+lint:
+ifneq (${GOLANGCI_LINT_VER}, "$(shell golangci-lint version --format short 2>&1)")
+	./install-golangcilint.sh v${GOLANGCI_LINT_VER}
+endif
+	$(GOBINPATH)/golangci-lint --timeout 3m run --allow-parallel-runners

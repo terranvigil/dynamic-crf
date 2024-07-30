@@ -1,0 +1,141 @@
+linters-settings:
+  depguard:
+    rules:
+        main:
+          files:
+            - $all
+          deny:
+            - pkg: "github.com/sirupsen/logrus"
+              desc: ""
+  dupl:
+    threshold: 100
+  funlen:
+    lines: 100
+    statements: 50
+  goconst:
+    min-len: 2
+    min-occurrences: 2
+  gocritic:
+    settings: 
+      hugeParam:
+        sizeThreshold: 512
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport # https://github.com/go-critic/go-critic/issues/845
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - wrapperFunc
+  gocyclo:
+    min-complexity: 15
+  goimports:
+    local-prefixes: github.com/golangci/golangci-lint
+  golint:
+    min-confidence: 0
+  govet:
+    shadow: true
+    settings:
+      printf:
+        funcs:
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+  lll:
+    line-length: 140
+  maligned:
+    suggest-new: true
+  nakedret:
+    max-func-lines: 75
+  misspell:
+    locale: US
+  nolintlint:
+    allow-leading-space: true # don't require machine-readable nolint directives (i.e. with no leading space)
+    allow-unused: false # report any unused nolint directives
+    require-explanation: false # don't require an explanation for nolint directives
+    require-specific: false # don't require nolint directives to be specific about which linter is being skipped
+
+linters:
+  enable-all: true
+  disable:
+    - cyclop
+    - gocyclo
+    - gochecknoglobals
+    - godot
+    - exhaustive # doesn't take "default" into account
+    - funlen
+    - gci # this one is just stupid (import ordering that doesn't match what you'd expect)
+    - gocognit # TODO enable and check if we can get to pass
+    - ireturn
+    - maintidx
+    - nilnil 
+    - nlreturn
+    - nolintlint # this currently won't work as go fumpt breaks
+    - prealloc
+    - revive
+    - nonamedreturns # this one makes no sense
+    - testpackage
+    - tagliatelle
+    - wsl
+    - dupl
+    - exhaustruct
+    - gomnd
+    - nestif
+    - paralleltest
+    - varnamelen
+    - wrapcheck
+    - lll
+    - godox
+
+# Excluding configuration per-path, per-linter, per-text and per-source
+
+issues:
+  exclude-dirs:
+    - vendor
+
+  exclude-rules:
+    - linters:
+      - err113
+      text: "do not define dynamic errors"
+    - linters:
+      - govet
+      text: "(copies lock)"
+    - linters:
+      - forbidigo
+      text: "(fmt.Print(|f|ln)|print|println)"
+    - linters:
+      - gomoddirectives
+      text: "replacement are not allowed"
+    - linters:
+      - gocritic
+      text: "paramTypeCombine"
+    - linters:
+      - mnd
+      text: "Magic number: 0o600"
+    - linters:
+      - gocritic
+      text: "(sloppyReassign: re-assignment to `err`|may want to add detail)"
+    - linters:
+      - gosec
+      text: "G204"
+    - path: _test\.go
+      linters:
+        - lll
+        - dupl
+        - goconst
+    - path: tools\**
+      linters:
+        - deadcode
+
+# golangci.com configuration
+# https://github.com/golangci/golangci/wiki/Configuration
+service:
+  # use the fixed version to not introduce new linters unexpectedly
+  golangci-lint-version: 1.54.1
+  prepare:
+    #- echo "here I can run custom commands, but no preparation needed for this repo"

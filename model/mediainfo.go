@@ -1,3 +1,4 @@
+//nolint:misspell
 package model
 
 import (
@@ -292,7 +293,7 @@ func (m *MediaInfo) GetCaptionTracks() []*MediaInfoTrack {
 
 // Not really a track, but it's described by mediainfo as such
 func (m *MediaInfo) GetContainerInfoTrack() *MediaInfoTrack {
-	for i := 0; i < len(m.Media.Tracks); i++ {
+	for i := range m.Media.Tracks {
 		t := m.Media.Tracks[i]
 		if t.GetType() == TrackTypeGeneral {
 			return t
@@ -304,7 +305,7 @@ func (m *MediaInfo) GetContainerInfoTrack() *MediaInfoTrack {
 
 func (m *MediaInfo) getTracksByType(tt TrackType) []*MediaInfoTrack {
 	var tracks []*MediaInfoTrack
-	for i := 0; i < len(m.Media.Tracks); i++ {
+	for i := range m.Media.Tracks {
 		t := m.Media.Tracks[i]
 		if t.GetType() == tt {
 			tracks = append(tracks, t)
@@ -327,7 +328,7 @@ func (m *MediaInfo) GetCaptionTrackByID(id int) *MediaInfoTrack {
 }
 
 func (m *MediaInfo) getTrackByTypeAndID(tt TrackType, id int) *MediaInfoTrack {
-	for i := 0; i < len(m.Media.Tracks); i++ {
+	for i := range m.Media.Tracks {
 		t := m.Media.Tracks[i]
 		if t.GetType() == tt && t.GetIDNumeric() == id {
 			return t

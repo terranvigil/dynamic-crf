@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -13,7 +14,7 @@ import (
 	"github.com/terranvigil/dynamic-crf/model"
 )
 
-const vmafREString = "VMAF score: (([0-9]*[.])?[0-9]+)"
+const vmafREString = "VMAF score: ((\\d*[.])?\\d+)"
 
 var vmafRE = regexp.MustCompile(vmafREString)
 
@@ -48,28 +49,25 @@ func NewFfmpegVMAF(logger zerolog.Logger, distorted string, reference string, sp
 //  7. Distorted and reference must have the same pixel aspect ratio, convert distorted if not
 //  8. Scaling algorithm used to scale reference should be the same used to scale the distorted
 //     when it was originally encoded
-func (v *FfmpegVMAF) Run(ctx context.Context) (score float64, err error) {
+func (v *FfmpegVMAF) Run(ctx context.Context) (float64, error) {
+	var err error
 	var stderr bytes.Buffer
 
 	// get reference an distorted metadata
 	var refMeta, distMeta *model.MediaInfo
 	if refMeta, err = NewMediaInfo(v.logger, v.referencePath).Run(ctx); err != nil {
-		err = fmt.Errorf("failed to get mediainfo of reference, err: %w", err)
-		return
+		return 0, fmt.Errorf("failed to get mediainfo of reference, err: %w", err)
 	}
 	if distMeta, err = NewMediaInfo(v.logger, v.distortedPath).Run(ctx); err != nil {
-		err = fmt.Errorf("failed to get mediainfo of distorted, err: %w", err)
-		return
+		return 0, fmt.Errorf("failed to get mediainfo of distorted, err: %w", err)
 	}
 
 	var refW, refH, distW, distH int
 	if len(refMeta.GetVideoTracks()) == 0 {
-		err = fmt.Errorf("reference has no video tracks")
-		return
+		return 0, errors.New("reference has no video tracks")
 	}
 	if len(distMeta.GetVideoTracks()) == 0 {
-		err = fmt.Errorf("distorted has no video tracks")
-		return
+		return 0, errors.New("distorted has no video tracks")
 	}
 	refW = refMeta.GetVideoTracks()[0].Width
 	refH = refMeta.GetVideoTracks()[0].Height
@@ -85,48 +83,41 @@ func (v *FfmpegVMAF) Run(ctx context.Context) (score float64, err error) {
 
 	args := []string{
 		"-hide_banner",
-		"-i", v.distortedPath,
 		"-i", v.referencePath,
+		"-i", v.distortedPath,
 		"-an",
 	}
 
-	vmaf := fmt.Sprintf("libvmaf='n_threads=%d:n_subsample=%d'", threads, v.speed)
+	scale := ""
+	vmaf := fmt.Sprintf("libvmaf=n_threads=%d:n_subsample=%d", threads, v.speed)
 	if refW != distW || refH != distH {
+		v.logger.Info().Msgf("distorted and reference have different resolutions, upscaling distorted: %d:%d -> %d:%d", distW, distH, refW, refH)
 		// Note use Lanczos or Spline for sampling down, Bicubic or Lanczos for sampling up
 		// Note Lanczos is sharper but comes at the cost of ringing artifacts
 		// Note there may be cases where it is better to scale the reference to the distorted
 		//   resolution, e.g. the referende is 4K and the distorted is 1080p
-		v.logger.Info().Msgf("distorted and reference have different resolutions, upscaling distorted: %d:%d -> %d:%d", distW, distH, refW, refH)
-		scalingFilter := fmt.Sprintf("[0:v]scale=%d:%d:flags=bicubic,setpts=PTS-STARTPTS[distorted];", refW, refH)
-		scalingFilter += "[1:v]setpts=PTS-STARTPTS[reference];"
-		scalingFilter += "[distorted][reference]" + vmaf
-		args = append(args, "-filter_complex", scalingFilter)
-
-	} else {
-		args = append(args, "-lavfi", vmaf)
+		scale = fmt.Sprintf("scale=%d:%d:flags=bicubic,", refW, refH)
 	}
-	args = append(args, "-f", "null", "-")
 
-	v.logger.Info().Msg("running ffmpeg vmaf")
+	vmafFilter := "[0:v]setpts=PTS-STARTPTS[reference];"
+	vmafFilter += fmt.Sprintf("[1:v]%ssetpts=PTS-STARTPTS[distorted];", scale)
+	vmafFilter += "[distorted][reference]" + vmaf
+	args = append(args, "-lavfi", vmafFilter, "-f", "null", "-")
+
+	v.logger.Info().Msgf("running ffmpeg vmaf with distorted: %s, reference: %s", v.distortedPath, v.referencePath)
 	v.logger.Info().Msgf("ffmpeg args: %v", args)
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stderr = &stderr
 	if err = cmd.Run(); err != nil {
-		err = fmt.Errorf("ffmpeg vmaf of distorted: %s, reference: %s failed, err: %w, message: %s", v.distortedPath, v.referencePath, err, stderr.String())
-		return
+		return 0, fmt.Errorf("ffmpeg vmaf of distorted: %s, reference: %s failed, err: %w, message: %s", v.distortedPath, v.referencePath, err, stderr.String())
 	}
-
-	// v.log.Info().Msgf("stdout: %s", stderr.String())
 
 	// TODO use json for output and then marshal into struct
 	// grep for VMAF score: 77.281242
 	matches := vmafRE.FindStringSubmatch(stderr.String())
-	if len(matches) != 3 {
-		err = fmt.Errorf("failed to parse vmaf score from ffmpeg output")
-		return
+	if len(matches) != 3 { //nolint:mnd
+		return 0, errors.New("failed to parse vmaf score from ffmpeg output")
 	}
-	score, err = strconv.ParseFloat(matches[1], 64)
-
-	return
+	return strconv.ParseFloat(matches[1], 64)
 }
