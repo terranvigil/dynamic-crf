@@ -2,6 +2,7 @@ package actions
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 
@@ -55,19 +56,18 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	}
 	defer source.Close()
 
-	if sampleEncode, err = os.CreateTemp("", "sample_*.mp4"); err != nil {
-		c.logger.Fatal().Err(err).Msgf("failed to create temp file for encoding sample")
+	var metadata *model.MediaInfo
+	if metadata, err = commands.NewMediaInfo(c.logger, c.sourcePath).Run(ctx); err != nil {
+		return 0, 0.0, fmt.Errorf("failed to get mediainfo of test output, err: %w", err)
 	}
-	defer os.Remove(sampleEncode.Name())
-
-	var scenes []model.Scene
-	var fps float64
-	if scenes, fps, err = inspect.DetectScenes(c.logger, ctx, c.sourcePath); err != nil {
-		c.logger.Fatal().Err(err).Msgf("failed to detect scenes in source: %s", c.sourcePath)
-	}
-
-	if err = commands.NewFfmpegSampler(c.logger, c.sourcePath, sampleEncode.Name(), fps, scenes).Run(ctx); err != nil {
-		c.logger.Fatal().Err(err).Msgf("failed to sample source: %s", c.sourcePath)
+	if metadata.GetContainer().Duration < 60*1000 { //nolint:mnd
+		c.logger.Info().Msg("source is less than 60 seconds, skipping creation of shots sample")
+		sampleEncode = source
+	} else {
+		if sampleEncode, err = c.createSceneSample(ctx); err != nil {
+			return 0, 0.0, fmt.Errorf("failed to create scene sample, err: %w", err)
+		}
+		defer os.Remove(sampleEncode.Name())
 	}
 
 	// TODO this needs to be adjusted per codec
@@ -81,14 +81,14 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	// if within threshold, return CRF
 	// if not, repeat using interpolated CRF as new min or max
 
-	initialScore := 0.0
+	var initialScore float64
 	if initialScore, err = c.runScore(ctx, sampleEncode.Name(), c.crfInitial); err != nil {
-		return
-	} else if checkScore(c.logger, initialScore, c.targetVMAF, c.tolerance, c.crfInitial) {
+		return selected, vmaf, err
+	} else if checkScore(initialScore, c.targetVMAF, c.tolerance) {
 		vmaf = initialScore
 		selected = c.crfInitial
 		c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
-		return
+		return selected, vmaf, nil
 	} else if initialScore > c.targetVMAF {
 		c.crfMax = c.crfInitial
 	} else {
@@ -106,25 +106,25 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 
 	if scores[low] == 0 {
 		if scores[low], err = c.runScore(ctx, sampleEncode.Name(), c.crfMin); err != nil {
-			return
+			return selected, vmaf, err
 		}
-		if checkScore(c.logger, scores[low], c.targetVMAF, c.tolerance, c.crfMin) {
+		if checkScore(scores[low], c.targetVMAF, c.tolerance) {
 			vmaf = scores[low]
 			selected = c.crfMin
 			c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
-			return
+			return selected, vmaf, err
 		}
 	}
 
 	if scores[high] == 0 {
 		if scores[high], err = c.runScore(ctx, sampleEncode.Name(), c.crfMax); err != nil {
-			return
+			return selected, vmaf, nil
 		}
-		if checkScore(c.logger, scores[high], c.targetVMAF, c.tolerance, c.crfMax) {
+		if checkScore(scores[high], c.targetVMAF, c.tolerance) {
 			vmaf = scores[high]
 			selected = c.crfMax
 			c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
-			return
+			return selected, vmaf, err
 		}
 	}
 
@@ -134,7 +134,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 		selected = c.crfMax
 		vmaf = scores[high]
 		c.logger.Info().Msgf("target vmaf: %.2f is higher than vmaf of %f for max crf: %d, selecting max crf", c.targetVMAF, vmaf, c.crfMax)
-		return
+		return selected, vmaf, err
 	}
 
 	// interpolated search
@@ -151,10 +151,10 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 		c.logger.Info().Msgf("searching position: %d, crf: %d", curPos, curCRF)
 
 		if scores[curPos], err = c.runScore(ctx, sampleEncode.Name(), curCRF); err != nil {
-			return
+			return selected, vmaf, err
 		}
 
-		if checkScore(c.logger, scores[curPos], c.targetVMAF, c.tolerance, curCRF) {
+		if checkScore(scores[curPos], c.targetVMAF, c.tolerance) {
 			break
 		}
 
@@ -171,23 +171,45 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 	vmaf = scores[curPos]
 	c.logger.Info().Msgf("found vmaf: %.2f for crf: %d", vmaf, selected)
 
-	return
+	return selected, vmaf, err
 }
 
 func (c *CrfSearch) runScore(ctx context.Context, samplePath string, crf int) (float64, error) {
 	currentConfig := c.transcodeConfig
 	currentConfig.VideoCRF = crf
-	score, averageBitrateKBPS, streamSize, err := NewVMAFScore(c.logger, currentConfig, samplePath).Run(ctx)
+	score, averageBitrateKBPS, maxBitrateKBPS, streamSize, err := NewVMAFScore(c.logger, currentConfig, samplePath).Run(ctx)
 	if err != nil {
 		return 0, err
 	}
 
 	streamSizeKB := message.NewPrinter(language.English).Sprintf("%d", streamSize)
-	c.logger.Info().Msgf("score: %.2f, bitrate: %dKbps, size: %sKB", score, averageBitrateKBPS, streamSizeKB)
+	c.logger.Info().Msgf("score: %.2f, avgBitrate: %dKbps, maxBitrate: %dKbps, buffer-size: %dKbs, file-size: %sKB", score, averageBitrateKBPS, maxBitrateKBPS, currentConfig.VideoBufferSizeKbps, streamSizeKB)
 
 	return score, nil
 }
 
-func checkScore(logger zerolog.Logger, vmaf float64, targetVmaf float64, tolerance float64, crf int) bool {
+func checkScore(vmaf float64, targetVmaf float64, tolerance float64) bool {
 	return math.Abs(vmaf-targetVmaf) < tolerance
+}
+
+func (c *CrfSearch) createSceneSample(ctx context.Context) (*os.File, error) {
+	var err error
+	var scenes []model.Scene
+	var fps float64
+	var sampleEncode *os.File
+
+	if sampleEncode, err = os.CreateTemp("", "sample_*.mp4"); err != nil {
+		c.logger.Fatal().Err(err).Msgf("failed to create temp file for encoding sample")
+	}
+
+	if scenes, fps, err = inspect.DetectScenes(c.logger, ctx, c.sourcePath); err != nil {
+		err = fmt.Errorf("failed to detect scenes in source, err: %w", err)
+		return nil, err
+	}
+	if err = commands.NewFfmpegSampler(c.logger, c.sourcePath, sampleEncode.Name(), fps, scenes).Run(ctx); err != nil {
+		err = fmt.Errorf("failed to sample source, err: %w", err)
+		return nil, err
+	}
+
+	return sampleEncode, nil
 }

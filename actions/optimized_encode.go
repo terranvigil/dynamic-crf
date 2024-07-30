@@ -51,7 +51,7 @@ func (e *OptimizedEncoded) Run(ctx context.Context) error {
 		return err
 	}
 
-	if vmaf, err = commands.NewFfmpegVMAF(e.logger, e.targetPath, e.sourcePath, 5).Run(ctx); err != nil {
+	if vmaf, err = commands.NewFfmpegVMAF(e.logger, e.targetPath, e.sourcePath, DefaultSpeed).Run(ctx); err != nil {
 		return err
 	}
 
@@ -60,8 +60,8 @@ func (e *OptimizedEncoded) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to get mediainfo of test output, err: %w", err)
 	}
 
-	averageBitrateKBPS := metadata.GetVideoTracks()[0].BitRate / 1000
-	streamSizeMB := metadata.GetVideoTracks()[0].StreamSize / 1000000
+	averageBitrateKBPS := metadata.GetVideoTracks()[0].BitRate / 1000 //nolint:mnd
+	streamSizeMB := metadata.GetVideoTracks()[0].StreamSize / 1000000 //nolint:mnd
 
 	e.logger.Info().Msgf("Done: Optimized encode with crf: %d, score: %.2f, avg bitrate: %dKbps, stream size: %dM", crf, vmaf, averageBitrateKBPS, streamSizeMB)
 

@@ -120,7 +120,7 @@ type FfprobeFormatTag struct {
 }
 
 func (f *FfprobeMetadata) StreamByID(id int) *FfprobeStream {
-	for i := 0; i < len(f.Streams); i++ {
+	for i := range f.Streams {
 		s := f.Streams[i]
 		if s.GetID() == id {
 			return &s
@@ -130,7 +130,7 @@ func (f *FfprobeMetadata) StreamByID(id int) *FfprobeStream {
 }
 
 func (f *FfprobeMetadata) VideoStream() *FfprobeStream {
-	for i := 0; i < len(f.Streams); i++ {
+	for i := range f.Streams {
 		s := f.Streams[i]
 		if s.CodecType == "video" {
 			return &s
@@ -140,7 +140,7 @@ func (f *FfprobeMetadata) VideoStream() *FfprobeStream {
 }
 
 func (f *FfprobeMetadata) AudioStream() *FfprobeStream {
-	for i := 0; i < len(f.Streams); i++ {
+	for i := range f.Streams {
 		s := f.Streams[i]
 		if s.CodecType == "audio" {
 			return &s
@@ -155,7 +155,7 @@ func (s *FfprobeStream) BitRateInt() (int, error) {
 
 func FractionToFloat(val string) (float64, error) {
 	parts := strings.Split(val, "/")
-	if len(parts) != 2 {
+	if len(parts) != 2 { //nolint:mnd
 		return 0, errors.New("invalid fraction: " + val)
 	}
 	numerator, err := strconv.Atoi(parts[0])
