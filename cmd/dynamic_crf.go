@@ -17,23 +17,22 @@ import (
 	"github.com/terranvigil/dynamic-crf/model"
 )
 
-// TODO:
-// -- add vmaf models to project
-// -- select vmaf model based on resolution
 const (
 	actionOptimize = "optimize"
 	actionSearch   = "search"
 	actionEncode   = "encode"
-	actionScore    = "score"
 	actionInspect  = "inspect"
+	actionVmaf     = "vmaf"
+	actionCambi    = "cambi"
 )
 
 var validActions = []string{
 	actionOptimize,
-	actionInspect,
-	actionEncode,
-	actionScore,
 	actionSearch,
+	actionEncode,
+	actionInspect,
+	actionVmaf,
+	actionCambi,
 }
 
 func main() {
@@ -64,7 +63,7 @@ func main() {
 		defaultVMAFSpeed       = 5
 	)
 
-	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode, score, inspect")
+	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode, inspect, vmaf, cambi")
 	flag.StringVar(&action, "a", "", "action to perform: optimize, encode")
 	flag.IntVar(&crf, "crf", 0, "crf value to use for encode action")
 	flag.IntVar(&bitrateKbps, "bitrate", 0, "bitrate value to use for encode action")
@@ -176,24 +175,6 @@ func main() {
 			encodeType = fmt.Sprintf("bitrate: %d", bitrateKbps)
 		}
 		logger.Info().Msgf("Done: Encode with %s, score: %.2f", encodeType, score)
-	case actionScore:
-		// for readability
-		referencePath := sourcePath
-		distortedPath := targetPath
-		var score float64
-		if score, err = commands.NewFfmpegVMAF(logger, distortedPath, referencePath, defaultVMAFSpeed).Run(ctx); err != nil {
-			logger.Fatal().Err(err).Msgf("failed to calc vmaf of test output, err: %v", err)
-		}
-		var metadata *model.MediaInfo
-		if metadata, err = commands.NewMediaInfo(logger, distortedPath).Run(ctx); err != nil {
-			err = fmt.Errorf("failed to get mediainfo of test output, err: %w", err)
-			logger.Fatal().Err(err).Msg("failed to get mediainfo of test output")
-		}
-
-		averageBitrateKBPS := metadata.GetVideoTracks()[0].BitRate / 1000    //nolint:mnd
-		maxBitrateKBPS := metadata.GetVideoTracks()[0].BitRateMaximum / 1000 //nolint:mnd
-		streamSizeKB := metadata.GetVideoTracks()[0].StreamSize / 1000       //nolint:mnd
-		logger.Info().Msgf("Done: VMAF: %.2f, avg bitrate: %dKbps, max bitrate: %dkbps, stream size: %dkbps", score, averageBitrateKBPS, maxBitrateKBPS, streamSizeKB)
 	case actionInspect:
 		var metadata *model.MediaInfo
 		if metadata, err = commands.NewMediaInfo(logger, sourcePath).Run(ctx); err != nil {
@@ -208,6 +189,29 @@ func main() {
 			}
 		}
 		logger.Info().Msgf("Done. Wrote metadata to: %s", targetPath)
+	case actionVmaf:
+		referencePath := sourcePath
+		distortedPath := targetPath
+		var score float64
+		if score, err = commands.NewFfmpegVMAF(logger, distortedPath, referencePath, defaultVMAFSpeed).Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msgf("failed to calc vmaf of test output, err: %v", err)
+		}
+		var metadata *model.MediaInfo
+		if metadata, err = commands.NewMediaInfo(logger, distortedPath).Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msg("failed to get mediainfo of test output")
+		}
+		averageBitrateKBPS := metadata.GetVideoTracks()[0].BitRate / 1000    //nolint:mnd
+		maxBitrateKBPS := metadata.GetVideoTracks()[0].BitRateMaximum / 1000 //nolint:mnd
+		streamSizeKB := metadata.GetVideoTracks()[0].StreamSize / 1000       //nolint:mnd
+		logger.Info().Msgf("Done: VMAF: %.2f, avg bitrate: %dKbps, max bitrate: %dkbps, stream size: %dkbps", score, averageBitrateKBPS, maxBitrateKBPS, streamSizeKB)
+	case actionCambi:
+		referencePath := sourcePath
+		distortedPath := targetPath
+		var max, mean float64
+		if max, mean, err = commands.NewCambi(logger, distortedPath, referencePath).Run(ctx); err != nil {
+			logger.Fatal().Err(err).Msgf("failed to calc cambi of output, err: %v", err)
+		}
+		logger.Info().Msgf("Done: CAMBI max: %.2f, mean: %.2f", max, mean)
 	case "default":
 		logger.Fatal().Msg("invalid action specified")
 	}

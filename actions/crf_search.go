@@ -177,7 +177,7 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 func (c *CrfSearch) runScore(ctx context.Context, samplePath string, crf int) (float64, error) {
 	currentConfig := c.transcodeConfig
 	currentConfig.VideoCRF = crf
-	score, averageBitrateKBPS, maxBitrateKBPS, streamSize, err := NewVMAFScore(c.logger, currentConfig, samplePath).Run(ctx)
+	score, averageBitrateKBPS, maxBitrateKBPS, streamSize, err := NewVMAFEncodeScore(c.logger, currentConfig, samplePath).Run(ctx)
 	if err != nil {
 		return 0, err
 	}

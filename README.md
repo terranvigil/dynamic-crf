@@ -40,8 +40,14 @@ Typically, there are three model types trained: 4K, HD and Phone
 * Run a test encode given a source and encoding settings:<br />
 `dynamic-crf -i source.mp4 -a encode -h 720 -mb 6000 -bs 24000`
 
+* Generate media metadata for source input and write as json to `{source}_inspect.json`
+`dynamic-crf -i source.mp4 -a inspect`
+
 * Calculate the VMAF score of an encode:<br />
-`dynamic-crf -i source.mp4 -o optimized.mp4 -a score`
+`dynamic-crf -i source.mp4 -o optimized.mp4 -a vmaf`
+
+* Calculate the Cambi score of an encode:<br />
+`dynamic-crf -i source.mp4 -o optimized.mp4 -a cambi`
 
 ### TODO
 
