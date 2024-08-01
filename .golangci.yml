@@ -116,7 +116,7 @@ issues:
       text: "paramTypeCombine"
     - linters:
       - mnd
-      text: "Magic number: 0o600"
+      text: "Magic number: 0o6"
     - linters:
       - gocritic
       text: "(sloppyReassign: re-assignment to `err`|may want to add detail)"

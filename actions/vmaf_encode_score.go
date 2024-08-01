@@ -14,23 +14,23 @@ const (
 	DefaultSpeed = 5
 )
 
-// VMAFScore will encode a sample of the source video with a given trancode configuration
+// VMAFScore will encode the source video with a given trancode configuration
 // and return the VMAF score
-type VMAFScore struct {
+type VMAFEncodeScore struct {
 	logger          zerolog.Logger
 	transcodeConfig commands.TranscodeConfig
 	referencePath   string
 }
 
-func NewVMAFScore(logger zerolog.Logger, cfg commands.TranscodeConfig, referencePath string) *VMAFScore {
-	return &VMAFScore{
+func NewVMAFEncodeScore(logger zerolog.Logger, cfg commands.TranscodeConfig, referencePath string) *VMAFEncodeScore {
+	return &VMAFEncodeScore{
 		logger:          logger,
 		referencePath:   referencePath,
 		transcodeConfig: cfg,
 	}
 }
 
-func (v *VMAFScore) Run(ctx context.Context) (score float64, averageBitrateKBPS int, maxBitrateKBPS int, streamSizeKB int, err error) {
+func (v *VMAFEncodeScore) Run(ctx context.Context) (score float64, averageBitrateKBPS int, maxBitrateKBPS int, streamSizeKB int, err error) {
 	var testEncode *os.File
 	if testEncode, err = os.CreateTemp("", "tst_encode*.mp4"); err != nil {
 		err = fmt.Errorf("failed to create temp target encode file, err: %w", err)
