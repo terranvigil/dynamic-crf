@@ -1,5 +1,7 @@
 # binary
 dynamic-crf
+bin/
+.ffmpeg-build/
 
 # media files
 *.mp4
@@ -9,6 +11,9 @@ dynamic-crf
 *.avi
 *.webm
 *.yuv
+*.y4m
+*.tar.gz
+fixtures/media/
 
 # OS
 .DS_Store

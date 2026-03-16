@@ -76,15 +76,26 @@ VMAF models are trained for specific viewing conditions. Netflix provides models
 The following tools must be installed and available on your `PATH`:
 
 - [Go](https://go.dev/dl/) 1.24+
-- [FFmpeg](https://ffmpeg.org/download.html) with libvmaf support
+- [FFmpeg](https://ffmpeg.org/download.html) built with `--enable-libvmaf`
 - [MediaInfo](https://mediaarea.net/en/MediaInfo/Download) (CLI version)
 - [vmaf](https://github.com/Netflix/vmaf) CLI (only required for the `cambi` action)
 
-FFmpeg must be built with `--enable-libvmaf`. Verify:
+### Building FFmpeg with libvmaf
+
+Most package managers ship FFmpeg without libvmaf. A build script is included for macOS:
 
 ```bash
-ffmpeg -filters 2>&1 | grep vmaf
-# should show: ... libvmaf  V->V  Calculate the VMAF ...
+./scripts/build-ffmpeg-macos.sh
+export PATH=$(pwd)/bin/ffmpeg:$PATH
+```
+
+This builds FFmpeg from source with libx264, libx265, SVT-AV1, libvpx, libvmaf, and hardware acceleration. Requires Homebrew and Xcode Command Line Tools. Takes about 5-10 minutes.
+
+Verify your setup:
+
+```bash
+ffmpeg -filters 2>&1 | grep libvmaf
+# should show: ... libvmaf  VV->V  Calculate the VMAF ...
 
 mediainfo --Version
 ```

@@ -180,9 +180,9 @@ func run(logger *slog.Logger) error {
 		if len(tracks) == 0 {
 			return fmt.Errorf("no video tracks in distorted file")
 		}
-		averageBitrateKBPS := tracks[0].BitRate / 1000    //nolint:mnd
-		maxBitrateKBPS := tracks[0].BitRateMaximum / 1000 //nolint:mnd
-		streamSizeKB := tracks[0].StreamSize / 1000       //nolint:mnd
+		averageBitrateKBPS := int(tracks[0].BitRate) / 1000    //nolint:mnd
+		maxBitrateKBPS := int(tracks[0].BitRateMaximum) / 1000 //nolint:mnd
+		streamSizeKB := int(tracks[0].StreamSize) / 1000       //nolint:mnd
 		logger.Info("vmaf complete",
 			"vmaf", fmt.Sprintf("%.2f", score),
 			"avgBitrate", fmt.Sprintf("%dKbps", averageBitrateKBPS),

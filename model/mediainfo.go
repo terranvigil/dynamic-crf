@@ -103,7 +103,7 @@ type MediaInfoTrack struct {
 	ScanTypeStoreMethodString string  `json:"ScanType_StoreMethod_String,omitempty"`
 	ScanOrder                 string  `json:"ScanOrder,omitempty"`
 	ScanOrderString           string  `json:"ScanOrder_String,omitempty"`
-	StreamSize                int     `json:"StreamSize,string,omitempty"`
+	StreamSize                float64 `json:"StreamSize,string,omitempty"`
 	StreamSizeString          string  `json:"StreamSize_String,omitempty"`
 	StreamSizeString1         string  `json:"StreamSize_String1,omitempty"`
 	StreamSizeString2         string  `json:"StreamSize_String2,omitempty"`
@@ -140,9 +140,9 @@ type MediaInfoTrack struct {
 	FormatSettingsRefFrames        string  `json:"Format_Settings_RefFrames,omitempty"`
 	FormatSettingsRefFramesString  string  `json:"Format_Settings_RefFrames_String,omitempty"`
 	CodecIDInfo                    string  `json:"CodecID_Info,omitempty"`
-	BitRate                        int     `json:"BitRate,string,omitempty"`
+	BitRate                        float64 `json:"BitRate,string,omitempty"`
 	BitRateString                  string  `json:"BitRate_String,omitempty"`
-	BitRateMaximum                 int     `json:"BitRate_Maximum,string,omitempty"`
+	BitRateMaximum                 float64 `json:"BitRate_Maximum,string,omitempty"`
 	BitRateMaximumString           string  `json:"BitRate_Maximum_String,omitempty"`
 	Width                          int     `json:"Width,string,omitempty"`
 	WidthString                    string  `json:"Width_String,omitempty"`

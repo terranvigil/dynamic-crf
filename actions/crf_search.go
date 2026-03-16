@@ -15,7 +15,10 @@ import (
 	"github.com/terranvigil/dynamic-crf/model"
 )
 
-const maxSearchIterations = 20
+const (
+	maxSearchIterations       = 20
+	defaultSceneSampleMinDurMs = 60 * 1000
+)
 
 // CrfSearch will perform a hybrid bisection/interpolation search over CRF values
 // to find the closest match to the target VMAF
@@ -32,6 +35,9 @@ type CrfSearch struct {
 	scoreFn func(ctx context.Context, samplePath string, crf int) (float64, error)
 	// samplePath overrides sample creation for testing
 	samplePath string
+	// sceneSampleMinDurMs is the minimum source duration (ms) before scene sampling kicks in.
+	// Zero means use the default (60s).
+	sceneSampleMinDurMs float64
 }
 
 func NewCrfSearch(logger *slog.Logger, source string, targetVMAF float64, crfInitial int, crfMin int, crfMax int, tolerance float64, transcodeConfig commands.TranscodeConfig) *CrfSearch {
@@ -70,7 +76,17 @@ func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err er
 		if metadata, err = commands.NewMediaInfo(c.logger, c.sourcePath).Run(ctx); err != nil {
 			return 0, 0, fmt.Errorf("failed to get mediainfo of source, err: %w", err)
 		}
-		if metadata.GetContainer().Duration < 60*1000 { //nolint:mnd
+		minDurMs := c.sceneSampleMinDurMs
+		if minDurMs == 0 {
+			minDurMs = defaultSceneSampleMinDurMs
+		}
+		// mediainfo reports duration in ms for most containers, but in seconds
+		// for raw formats like y4m. Normalize to ms.
+		durationMs := metadata.GetContainer().Duration
+		if durationMs < 1000 {
+			durationMs *= 1000
+		}
+		if durationMs < minDurMs {
 			c.logger.Info("source is less than 60 seconds, skipping creation of shots sample")
 			sampleName = source.Name()
 		} else {

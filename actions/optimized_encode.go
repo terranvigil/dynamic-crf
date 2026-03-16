@@ -64,8 +64,8 @@ func (e *OptimizedEncoded) Run(ctx context.Context) error {
 		return fmt.Errorf("no video tracks in encoded output")
 	}
 
-	averageBitrateKBPS := tracks[0].BitRate / 1000 //nolint:mnd
-	streamSizeMB := tracks[0].StreamSize / 1000000 //nolint:mnd
+	averageBitrateKBPS := int(tracks[0].BitRate) / 1000 //nolint:mnd
+	streamSizeMB := int(tracks[0].StreamSize) / 1000000 //nolint:mnd
 
 	e.logger.Info("optimized encode complete",
 		"crf", crf,

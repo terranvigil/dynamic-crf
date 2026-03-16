@@ -10,7 +10,7 @@ GOLANGCI_LINT_VER="2.11.3"
 
 BINARY_NAME=dynamic-crf
 
-.PHONY: build test fmt lint clean vendor run
+.PHONY: build test test-integration fmt lint clean vendor run test-fixtures
 
 build:
 	$(GOBUILD) -o $(BINARY_NAME) -v ./cmd/dynamic_crf.go
@@ -38,6 +38,9 @@ clean:
 vendor:
 	$(GOCMD) mod tidy
 	$(GOCMD) mod vendor
+
+test-fixtures:
+	./scripts/setup-test-fixtures.sh
 
 run: build
 	./$(BINARY_NAME) $(ARGS)
