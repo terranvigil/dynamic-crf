@@ -3,9 +3,9 @@ package actions
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
-	"github.com/rs/zerolog"
 	"github.com/terranvigil/dynamic-crf/commands"
 	"github.com/terranvigil/dynamic-crf/model"
 )
@@ -14,15 +14,15 @@ const (
 	DefaultSpeed = 5
 )
 
-// VMAFScore will encode the source video with a given trancode configuration
+// VMAFEncodeScore will encode the source video with a given transcode configuration
 // and return the VMAF score
 type VMAFEncodeScore struct {
-	logger          zerolog.Logger
+	logger          *slog.Logger
 	transcodeConfig commands.TranscodeConfig
 	referencePath   string
 }
 
-func NewVMAFEncodeScore(logger zerolog.Logger, cfg commands.TranscodeConfig, referencePath string) *VMAFEncodeScore {
+func NewVMAFEncodeScore(logger *slog.Logger, cfg commands.TranscodeConfig, referencePath string) *VMAFEncodeScore {
 	return &VMAFEncodeScore{
 		logger:          logger,
 		referencePath:   referencePath,
@@ -36,7 +36,7 @@ func (v *VMAFEncodeScore) Run(ctx context.Context) (score float64, averageBitrat
 		err = fmt.Errorf("failed to create temp target encode file, err: %w", err)
 		return
 	}
-	defer os.Remove(testEncode.Name())
+	defer os.Remove(testEncode.Name()) //nolint:errcheck
 
 	if err = commands.NewFfmpegEncode(v.logger, v.referencePath, testEncode.Name(), v.transcodeConfig).Run(ctx); err != nil {
 		err = fmt.Errorf("failed to encode reference: %s, err: %w", v.referencePath, err)
@@ -54,9 +54,15 @@ func (v *VMAFEncodeScore) Run(ctx context.Context) (score float64, averageBitrat
 		return
 	}
 
-	averageBitrateKBPS = metadata.GetVideoTracks()[0].BitRate / 1000    //nolint:mnd
-	maxBitrateKBPS = metadata.GetVideoTracks()[0].BitRateMaximum / 1000 //nolint:mnd
-	streamSizeKB = metadata.GetVideoTracks()[0].StreamSize / 1000       //nolint:mnd
+	tracks := metadata.GetVideoTracks()
+	if len(tracks) == 0 {
+		err = fmt.Errorf("no video tracks in encoded output")
+		return
+	}
+
+	averageBitrateKBPS = tracks[0].BitRate / 1000    //nolint:mnd
+	maxBitrateKBPS = tracks[0].BitRateMaximum / 1000 //nolint:mnd
+	streamSizeKB = tracks[0].StreamSize / 1000       //nolint:mnd
 
 	return
 }

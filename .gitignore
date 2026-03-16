@@ -1,4 +1,32 @@
-.DS_Store
+# binary
+dynamic-crf
+
+# media files
 *.mp4
 *.ts
-dynamic-crf
+*.mkv
+*.mov
+*.avi
+*.webm
+*.yuv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+*.prof
+
+# temp files
+*.tmp

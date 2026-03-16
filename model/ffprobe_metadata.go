@@ -5,8 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/terranvigil/dynamic-crf/maths"
 )
 
 type FfprobeMetadata struct {
@@ -63,11 +61,13 @@ type FfprobeStream struct {
 }
 
 func (s *FfprobeStream) GetID() int {
-	if id, err := maths.HexToInt(s.ID); err != nil {
+	hex := strings.ReplaceAll(s.ID, "0x", "")
+	hex = strings.ReplaceAll(hex, "0X", "")
+	id, err := strconv.ParseInt(hex, 16, 64)
+	if err != nil {
 		return -1
-	} else {
-		return int(id)
 	}
+	return int(id)
 }
 
 type FfprobeDispostion struct {

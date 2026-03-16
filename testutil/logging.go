@@ -1,13 +1,11 @@
 package testutil
 
 import (
-	"os"
+	"log/slog"
 	"testing"
-
-	"github.com/rs/zerolog"
 )
 
-func GetTestLogger(t *testing.T) zerolog.Logger {
+func GetTestLogger(t *testing.T) *slog.Logger {
 	t.Helper()
-	return zerolog.New(os.Stderr).With().Logger().Level(zerolog.Disabled)
+	return slog.New(slog.DiscardHandler)
 }

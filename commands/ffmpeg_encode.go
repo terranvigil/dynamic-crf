@@ -4,21 +4,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
-
-	"github.com/rs/zerolog"
 )
 
 // FfmpegEncode performs a simple encode given encoding parameters
 type FfmpegEncode struct {
-	logger     zerolog.Logger
+	logger     *slog.Logger
 	cfg        TranscodeConfig
 	sourcePath string
 	targetPath string
 }
 
-func NewFfmpegEncode(logger zerolog.Logger, source string, target string, cfg TranscodeConfig) *FfmpegEncode {
+func NewFfmpegEncode(logger *slog.Logger, source string, target string, cfg TranscodeConfig) *FfmpegEncode {
 	return &FfmpegEncode{
 		logger:     logger,
 		sourcePath: source,
@@ -28,15 +27,16 @@ func NewFfmpegEncode(logger zerolog.Logger, source string, target string, cfg Tr
 }
 
 func (e *FfmpegEncode) Run(ctx context.Context) error {
-	var err error
 	var stderr bytes.Buffer
 
+	if e.cfg.VideoCRF <= 0 && e.cfg.VideoBitrateKbps <= 0 {
+		return fmt.Errorf("bitrate or crf required for encode action")
+	}
+
 	if e.cfg.VideoCRF > 0 {
-		e.logger.Info().Msgf("running ffmpeg test encode with crf: %d", e.cfg.VideoCRF)
-	} else if e.cfg.VideoBitrateKbps > 0 {
-		e.logger.Info().Msgf("running ffmpeg test encode with video kbps: %d", e.cfg.VideoBitrateKbps)
+		e.logger.Info("running ffmpeg test encode", "crf", e.cfg.VideoCRF)
 	} else {
-		e.logger.Fatal().Msg("bitrate or crf required for encode action")
+		e.logger.Info("running ffmpeg test encode", "bitrateKbps", e.cfg.VideoBitrateKbps)
 	}
 
 	args := []string{
@@ -67,21 +67,18 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 		if e.cfg.Width != 0 || e.cfg.Height != 0 {
 			// preserve aspect ratio if only one dimension is set, additionally use multiples of 2
 			// for codec compatibility
-			// TODO check what the dimensions will be chosen by ffmpeg as we may be able to skip
-			//   this step if they are equivalent and the source is not anymorphic
-			if e.cfg.Width == 0 {
-				e.cfg.Width = -2 //nolint:mnd
-			} else if e.cfg.Height == 0 {
-				e.cfg.Height = -2 //nolint:mnd
+			w := e.cfg.Width
+			h := e.cfg.Height
+			if w == 0 {
+				w = -2 //nolint:mnd
+			} else if h == 0 {
+				h = -2 //nolint:mnd
 			}
-			args = append(args, "-filter:v", fmt.Sprintf("[in]scale=%d:%d:flags=lanczos[out]", e.cfg.Width, e.cfg.Height))
+			args = append(args, "-filter:v", fmt.Sprintf("[in]scale=%d:%d:flags=lanczos[out]", w, h))
 		}
 		if e.cfg.Tune != "" {
 			args = append(args, "-tune", e.cfg.Tune)
 		}
-		// TODO if we're trying to get an accurate VMAF score, disable psycho-visual optimizations since
-		//   they increase the difference between source and output in order to improve perceived quality
-		// -tune psnr
 	} else {
 		args = append(args, "-vn")
 	}
@@ -95,11 +92,11 @@ func (e *FfmpegEncode) Run(ctx context.Context) error {
 	}
 	args = append(args, e.targetPath)
 
-	e.logger.Info().Msgf("ffmpeg args: %v", args)
+	e.logger.Info("ffmpeg encode", "args", args)
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stderr = &stderr
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("ffmpeg encode of %s failed, err: %w, message: %s", e.sourcePath, err, stderr.String())
 	}
 

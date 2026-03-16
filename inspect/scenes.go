@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"sort"
 	"strconv"
 
-	"github.com/rs/zerolog"
 	"github.com/terranvigil/dynamic-crf/commands"
 	"github.com/terranvigil/dynamic-crf/model"
 )
@@ -18,9 +18,10 @@ const (
 	MinSceneDuration   = 2.0
 	MaxSceneDuration   = 10.0
 	MaxScenesForSample = 15
+	MinScenesRequired  = 3
 )
 
-func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string) ([]model.Scene, float64, error) {
+func DetectScenes(logger *slog.Logger, ctx context.Context, sourcePath string) ([]model.Scene, float64, error) {
 	var scenes []model.Scene
 	var fps float64
 	var err error
@@ -31,6 +32,7 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 	if source, err = os.Open(sourcePath); err != nil {
 		return scenes, fps, fmt.Errorf("failed to open source: %s, err: %w", sourcePath, err)
 	}
+	defer source.Close() //nolint:errcheck
 
 	if metadata, err = commands.NewFfprobeMetadata(logger, source).Run(ctx); err != nil {
 		return scenes, fps, fmt.Errorf("failed to inspect source: %s, err: %w", sourcePath, err)
@@ -66,17 +68,23 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 	}
 	frames = filtered
 
-	if len(frames) > MaxScenesForSample {
-		logger.Info().Msgf("found %d scenes, reducing", len(frames))
+	// fallback to uniform temporal sampling if scene detection yields too few scenes
+	if len(frames) < MinScenesRequired {
+		logger.Info("too few scenes detected, falling back to uniform temporal sampling", "detected", len(frames))
+		scenes = uniformTemporalSample(streamDuration, MaxScenesForSample)
+		logger.Info("created uniform samples", "count", len(scenes))
+		return scenes, fps, nil
+	}
 
-		// should already be in time order, but just in case
+	if len(frames) > MaxScenesForSample {
+		logger.Info("reducing scenes", "found", len(frames))
+
 		sort.SliceStable(frames, func(i, j int) bool {
 			return frames[i].Pts < frames[j].Pts
 		})
 
-		// we want the most significant scenes
+		// select the most significant scenes
 		sort.SliceStable(frames, func(i, j int) bool {
-			logger.Debug().Msgf("score: %.2f", frames[i].GetSceneScore())
 			return frames[i].GetSceneScore() < frames[j].GetSceneScore()
 		})
 		frames = frames[:MaxScenesForSample]
@@ -101,10 +109,34 @@ func DetectScenes(logger zerolog.Logger, ctx context.Context, sourcePath string)
 	// last scene
 	scenes[len(scenes)-1].Duration = math.Min(MaxSceneDuration, streamDuration-scenes[len(scenes)-1].StartPTSSec)
 
-	logger.Info().Msgf("found %d scenes", len(scenes))
+	logger.Info("scene detection complete", "count", len(scenes))
 	for i, scene := range scenes {
-		logger.Info().Msgf("scene %d, start: %.2f, dur: %.2f, score: %.2f", i, scene.StartPTSSec, scene.Duration, scene.Score)
+		logger.Debug("scene", "index", i, "start", fmt.Sprintf("%.2f", scene.StartPTSSec), "duration", fmt.Sprintf("%.2f", scene.Duration), "score", fmt.Sprintf("%.2f", scene.Score))
 	}
 
 	return scenes, fps, nil
+}
+
+// uniformTemporalSample creates evenly-spaced sample scenes across the video duration
+// when scene detection doesn't yield enough results
+func uniformTemporalSample(duration float64, count int) []model.Scene {
+	sampleDur := math.Min(MaxSceneDuration, MinSceneDuration)
+	// ensure we don't exceed total duration
+	if float64(count)*sampleDur > duration {
+		count = int(duration / sampleDur)
+		if count < 1 {
+			count = 1
+		}
+	}
+
+	interval := duration / float64(count+1)
+	scenes := make([]model.Scene, count)
+	for i := range count {
+		start := interval * float64(i+1)
+		scenes[i] = model.Scene{
+			StartPTSSec: start,
+			Duration:    sampleDur,
+		}
+	}
+	return scenes
 }
