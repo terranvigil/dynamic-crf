@@ -1,55 +1,102 @@
 # dynamic-crf
 
-A CLI tool for finding the optimal CRF (Constant Rate Factor) value for video encoding by targeting a specific [VMAF](https://github.com/Netflix/vmaf) quality score. Rather than brute-force encoding at many bitrates, `dynamic-crf` uses a hybrid bisection/interpolation search with efficient VMAF sampling to converge quickly on the CRF that achieves your target quality.
+Find the CRF that hits your target VMAF, without brute-force trial encodes.
 
-Inspired by Netflix's per-title encoding optimization and Jan Ozer's paper [Formulate the Optimal Encoding Ladder with VMAF](https://streaminglearningcenter.com/encoding/optimal_encoding_ladder_vmaf.html).
+A CLI tool for finding the optimal CRF (Constant Rate Factor) value for video encoding by targeting a specific [VMAF](https://github.com/Netflix/vmaf) quality score. Rather than encoding at many bitrates and scoring each one, `dynamic-crf` uses a hybrid bisection/interpolation search with efficient VMAF sampling to converge quickly on the CRF that achieves your target quality.
 
-## How it works
+## The problem
 
-1. Select a target VMAF score (e.g., 95) and a CRF search range.
-2. For videos longer than 60 seconds, generate a representative sample from detected scene changes. Falls back to uniform temporal sampling when scene detection yields too few results.
-3. Score the CRF range boundaries to establish the VMAF envelope.
-4. Search using a hybrid algorithm: 70% bisection (guarantees convergence by halving the range) blended with 30% interpolation (biases toward the expected position). This handles VMAF's non-linear relationship with CRF, which is logarithmic/sigmoidal rather than linear.
-5. Converge when the VMAF score is within tolerance of the target, or after a maximum of 20 iterations.
+When encoding video with CRF, you're choosing a quality level, but the relationship between CRF and perceived quality depends entirely on the content. A talking-head at CRF 23 might score a VMAF of 97. The same CRF on an action sequence might drop to 85. The only way to know is to encode, score, and try again.
 
-### VMAF scoring guidelines
+The naive approach (encode at many CRF values, VMAF-score each one, pick the best) works but is expensive. Each VMAF pass alone can take longer than the encode. For a per-title encoding pipeline producing multiple renditions, the cost multiplies fast.
 
-| Target | Quality |
-|--------|---------|
-| 93 | Good — suitable for most content |
-| 95 | Near-indistinguishable from the reference |
-| 90+ | Should look good to most viewers |
+## The approach
 
-Three VMAF model types are typically available: 4K, HD, and Phone.
+This project was inspired by Netflix's [per-title encoding optimization](https://netflixtechblog.com/dynamic-optimizer-a-perceptual-video-encoding-optimization-framework-e19f1e3a277f) and Jan Ozer's paper [Formulate the Optimal Encoding Ladder with VMAF](https://streaminglearningcenter.com/encoding/optimal_encoding_ladder_vmaf.html). The key insight: VMAF scoring is the bottleneck, not encoding. Netflix's own [work on frame subsampling](https://netflixtechblog.com/vmaf-the-journey-continues-44b51ee9ed12) showed that trading off some scoring accuracy, particularly early in the search, can dramatically reduce total computation time.
+
+`dynamic-crf` reduces the cost in two ways:
+
+**Fewer encodes.** Instead of linear search, it uses a hybrid bisection/interpolation algorithm. Bisection guarantees convergence by halving the search range each step. Interpolation biases each guess toward where the target score is likely to land. The blend (70/30) handles the fact that VMAF's relationship with CRF is sigmoidal: nearly flat at the extremes and steep in the middle, where pure interpolation would overshoot.
+
+**Cheaper scoring.** Rather than VMAF-scoring the entire video at each step, it scores a representative sample: up to 15 scenes (2-10 seconds each) selected from detected scene changes. For videos over 60 seconds, this can cut scoring time dramatically while preserving accuracy. FFmpeg's frame subsampling (`n_subsample`) further trades precision for speed during early iterations.
+
+Typical searches converge in 3-5 VMAF evaluations.
+
+### Search workflow
+
+```
+                         source.mp4
+                             |
+                   +---------+---------+
+                   | duration >= 60s?  |
+                   +---------+---------+
+                    no |           | yes
+                       |           |
+                  use full     detect scenes
+                  source as    extract samples
+                  reference    concat to sample.mp4
+                       |           |
+                   +---+-----+-----+---+
+                   |   reference clip   |
+                   +--------+----------+
+                            |
+              +-------------+-------------+
+              |  score CRF min and max    |
+              |  (establish VMAF bounds)  |
+              +-------------+-------------+
+                            |
+              +-------------+-------------+
+              |  hybrid bisection loop    |
+              |                           |
+              |  1. bisect range (70%)    |
+              |  2. interpolate (30%)     |
+              |  3. blend + clamp         |
+              |  4. encode at CRF         |
+              |  5. VMAF score            |
+              |  6. within tolerance?     |
+              |     yes -> done           |
+              |     no  -> narrow range   |
+              +-------------+-------------+
+                            |
+                     selected CRF
+```
+
+### VMAF quality targets
+
+| Score | Meaning | When to use |
+|-------|---------|-------------|
+| 95 | Near-transparent. Most viewers cannot distinguish from the source | Top rung of an ABR ladder, archival |
+| 93 | High quality. Artifacts visible only under close inspection | Default target, good for most content |
+| 90 | Good quality. Minor artifacts on complex scenes | Bandwidth-constrained delivery |
+
+VMAF models are trained for specific viewing conditions. Netflix provides models for 4K, 1080p, and phone-sized displays. The model choice affects scores, so match the model to your target device.
 
 ## Prerequisites
 
 The following tools must be installed and available on your `PATH`:
 
-- [Go](https://go.dev/dl/) 1.22+
-- [FFmpeg](https://ffmpeg.org/download.html) (with libvmaf support)
-- [ffprobe](https://ffmpeg.org/ffprobe.html) (included with FFmpeg)
+- [Go](https://go.dev/dl/) 1.24+
+- [FFmpeg](https://ffmpeg.org/download.html) with libvmaf support
 - [MediaInfo](https://mediaarea.net/en/MediaInfo/Download) (CLI version)
-- [vmaf](https://github.com/Netflix/vmaf) (CLI, only required for the `cambi` action)
+- [vmaf](https://github.com/Netflix/vmaf) CLI (only required for the `cambi` action)
 
-Verify your setup:
+FFmpeg must be built with `--enable-libvmaf`. Verify:
 
 ```bash
-ffmpeg -version | head -1
-ffprobe -version | head -1
+ffmpeg -filters 2>&1 | grep vmaf
+# should show: ... libvmaf  V->V  Calculate the VMAF ...
+
 mediainfo --Version
 ```
 
 ## Installation
 
 ```bash
-# from source
 git clone https://github.com/terranvigil/dynamic-crf.git
 cd dynamic-crf
 make build
 
-# the binary is written to ./dynamic-crf
-./dynamic-crf -h
+./dynamic-crf -a search -i source.mp4
 ```
 
 ## Usage
@@ -62,67 +109,87 @@ dynamic-crf -a <action> -i <input> [options]
 
 | Action | Description | Requires `-o` |
 |--------|-------------|:---:|
-| `optimize` | Search for optimal CRF, encode, and score the result | Yes |
-| `search` | Find the optimal CRF for a target VMAF (no output file) | No |
-| `encode` | Encode with a given CRF or bitrate, then score | Yes |
+| `optimize` | Search for optimal CRF, encode the full video, and VMAF-score the result | Yes |
+| `search` | Find the optimal CRF for a target VMAF without producing an output file | No |
+| `encode` | Encode with a specific CRF or bitrate, then report its VMAF score | Yes |
 | `inspect` | Write source metadata as JSON to `{source}_inspect.json` | No |
-| `vmaf` | Calculate VMAF between source (reference) and output (distorted) | Yes |
-| `cambi` | Calculate CAMBI banding artifact scores | Yes |
+| `vmaf` | Calculate VMAF between a source (reference) and an encode (distorted) | Yes |
+| `cambi` | Calculate [CAMBI](https://netflixtechblog.com/cambi-a-banding-artifact-detector-96777ae12fe2) banding artifact scores | Yes |
 
 ### Flags
 
+**Search parameters:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-targetvmaf` | `95.0` | Target VMAF score (0-100) |
+| `-tolerance` | `0.5` | How close to the target is close enough (VMAF points) |
+| `-initialcrf` | `20` | Starting CRF for the search |
+| `-mincrf` | `30` | Low-quality bound (higher CRF = lower quality = smaller file) |
+| `-maxcrf` | `15` | High-quality bound (lower CRF = higher quality = larger file) |
+
+> **Note on CRF naming:** In FFmpeg, lower CRF means higher quality. The flags here describe the search *bounds*: `-mincrf 30` is the minimum quality you'll accept (CRF 30), and `-maxcrf 15` is the maximum quality you'll search up to (CRF 15). The search finds the sweet spot between them.
+
+**Encoding parameters:**
+
 | Flag | Alias | Default | Description |
 |------|-------|---------|-------------|
-| `-action` | `-a` | | Action to perform (required) |
-| `-input` | `-i` | | Path to input/source file (required) |
-| `-output` | `-o` | | Path to output file (`.mp4`). Required for all actions except `search` and `inspect` |
-| `-targetvmaf` | | `95.0` | Target VMAF score (0-100) |
-| `-tolerance` | | `0.5` | VMAF score tolerance for search convergence |
-| `-initialcrf` | | `20` | Starting CRF value for search |
-| `-mincrf` | | `30` | Low-quality CRF bound (higher number = lower quality) |
-| `-maxcrf` | | `15` | High-quality CRF bound (lower number = higher quality) |
 | `-codec` | | `libx264` | Video codec |
-| `-height` | `-h` | | Output height (preserves aspect ratio) |
-| `-width` | `-w` | | Output width (preserves aspect ratio) |
-| `-maxbitrate` | `-mb` | | Peak bitrate limit (kbps) |
-| `-buffersize` | `-bs` | | HRD buffer size (kbps) |
-| `-bitrate` | | | Target bitrate for `encode` action (kbps) |
-| `-crf` | | | CRF value for `encode` action |
+| `-height` | `-h` | | Output height in pixels (aspect ratio preserved) |
+| `-width` | `-w` | | Output width in pixels (aspect ratio preserved) |
+| `-maxbitrate` | `-mb` | | Peak bitrate cap, kbps |
+| `-buffersize` | `-bs` | | HRD buffer size, kbps |
 | `-tune` | `-t` | | Encoder tune: `animation`, `film`, `grain`, `psnr`, `ssim` |
-| `-minbitrate` | | | Minimum bitrate (forces CBR — not recommended) |
+| `-crf` | | | CRF value (encode action only) |
+| `-bitrate` | | | Target bitrate, kbps (encode action only) |
+| `-minbitrate` | | | Minimum bitrate, kbps (forces CBR, not recommended) |
+
+**I/O:**
+
+| Flag | Alias | Description |
+|------|-------|-------------|
+| `-action` | `-a` | Action to perform (required) |
+| `-input` | `-i` | Path to source video (required) |
+| `-output` | `-o` | Path to output file (`.mp4`, required for most actions) |
 
 ### Examples
 
 ```bash
-# find optimal CRF and produce an optimized encode
+# find the optimal CRF for a 1080p encode with bitrate cap
 dynamic-crf -a optimize -i source.mp4 -o optimized.mp4 -h 1080 -mb 12000 -bs 48000
+# => Found crf: 18, vmaf: 95.12, avg bitrate: 8400Kbps
 
-# search for the best CRF without producing an output file
+# search only: find the CRF without encoding the full video
 dynamic-crf -a search -i source.mp4 -h 720 -mb 6000 -bs 24000 -t animation
+# => Found crf: 16, vmaf: 95.34
 
-# encode at a specific CRF and report its VMAF
+# encode at a known CRF and check the quality
 dynamic-crf -a encode -i source.mp4 -o output.mp4 -crf 18 -h 720
+# => Encode with crf: 18, vmaf: 94.21
 
-# score an existing encode against its source
+# score an existing encode against the source
 dynamic-crf -a vmaf -i source.mp4 -o encoded.mp4
+# => VMAF: 93.45, avg bitrate: 6200Kbps
 
-# check for banding artifacts
+# check for banding artifacts (common in gradients and sky shots)
 dynamic-crf -a cambi -i source.mp4 -o encoded.mp4
+# => CAMBI max: 12.34, mean: 0.45
 
-# inspect source metadata
+# dump source metadata for inspection
 dynamic-crf -a inspect -i source.mp4
+# => Wrote metadata to: source.mp4_inspect.json
 ```
 
 ## Project structure
 
 ```
-cmd/                        CLI entry point
-actions/                    High-level orchestration (search, optimize, score)
-commands/                   FFmpeg/ffprobe/mediainfo wrappers
-inspect/                    Scene detection and sampling
-model/                      Data structures for FFprobe and MediaInfo output
+cmd/                        CLI entry point and flag parsing
+actions/                    High-level workflows (search, optimize, encode+score)
+commands/                   Wrappers for ffmpeg, ffprobe, mediainfo, vmaf CLIs
+inspect/                    Scene detection, sampling, and temporal analysis
+model/                      Data structures for FFprobe and MediaInfo JSON output
 testutil/                   Test helpers and fixture loading
-fixtures/                   Test data
+fixtures/                   Test data and expected responses
 ```
 
 ## Development
@@ -132,47 +199,43 @@ make build          # compile binary
 make test           # run unit tests (race detector enabled)
 make fmt            # format with gofumpt
 make lint           # run golangci-lint
+make clean          # remove build artifacts
+make vendor         # tidy and vendor dependencies
 ```
 
-### Running tests
-
-```bash
-# unit tests
-make test
-
-# integration tests (requires media fixtures)
-go test -v -race -count=1 -tags=integration ./...
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Roadmap
 
-- [ ] Per-scene variable CRF optimization
-- [ ] Parallel encode/score operations
-- [ ] Scene transition detection (fades, dissolves)
-- [ ] VMAF model training for anime content
-- [ ] HD/TV and phone resolution model training
+- [ ] **Per-scene variable CRF**: use different CRF values for different scene complexities within a single encode, instead of one CRF for the whole file
+- [ ] **Parallel encode/score**: run independent VMAF evaluations concurrently to reduce wall-clock search time
+- [ ] **Scene transition detection**: identify fades, dissolves, and cross-fades to avoid sampling across transition boundaries
+- [ ] **Anime VMAF model**: train a VMAF model tuned for animation content, which has different perceptual characteristics than live action
+- [ ] **Resolution-specific models**: train and validate models for HD/TV and mobile viewing conditions
 
 ## References
 
-### Research and papers
+### Key papers
 
-- [Formulate the Optimal Encoding Ladder with VMAF](https://streaminglearningcenter.com/encoding/optimal_encoding_ladder_vmaf.html) — Jan Ozer
-- [Dynamic Optimizer: A Perceptual Video Encoding Optimization Framework](https://netflixtechblog.com/dynamic-optimizer-a-perceptual-video-encoding-optimization-framework-e19f1e3a277f) — Netflix
-- [Toward a Practical Perceptual Video Quality Metric](https://netflixtechblog.com/toward-a-practical-perceptual-video-quality-metric-653f208b9652) — Netflix
-- [VMAF: The Journey Continues](https://netflixtechblog.com/vmaf-the-journey-continues-44b51ee9ed12) — Netflix
-- [CAMBI: A Banding Artifact Detector](https://netflixtechblog.com/cambi-a-banding-artifact-detector-96777ae12fe2) — Netflix
+- [Dynamic Optimizer: A Perceptual Video Encoding Optimization Framework](https://netflixtechblog.com/dynamic-optimizer-a-perceptual-video-encoding-optimization-framework-e19f1e3a277f), the Netflix system that inspired this project
+- [Formulate the Optimal Encoding Ladder with VMAF](https://streaminglearningcenter.com/encoding/optimal_encoding_ladder_vmaf.html), Jan Ozer's practical methodology
+- [Toward a Practical Perceptual Video Quality Metric](https://netflixtechblog.com/toward-a-practical-perceptual-video-quality-metric-653f208b9652), VMAF design and validation
+
+### Further reading
+
+- [CAMBI: A Banding Artifact Detector](https://netflixtechblog.com/cambi-a-banding-artifact-detector-96777ae12fe2), Netflix
+- [CRF Guide](https://slhck.info/video/2017/02/24/crf-guide.html), Werner Robitza's explanation of CRF encoding
 - [Finding the Just Noticeable Difference with VMAF](https://streaminglearningcenter.com/codecs/finding-the-just-noticeable-difference-with-netflix-vmaf.html)
 - [A Practical Guide for VMAF](https://jina-liu.medium.com/a-practical-guide-for-vmaf-481b4d420d9c)
-- [CRF Guide](https://slhck.info/video/2017/02/24/crf-guide.html) — Werner Robitza
-- [Instant Per-Title Encoding](https://www.mux.com/blog/instant-per-title-encoding) — Mux
+- [Instant Per-Title Encoding](https://www.mux.com/blog/instant-per-title-encoding), Mux
 
-### Tools and documentation
+### Tools
 
-- [Netflix VMAF](https://github.com/Netflix/vmaf)
+- [Netflix VMAF](https://github.com/Netflix/vmaf), source, models, and documentation
 - [FFmpeg libvmaf filter](https://ffmpeg.org/ffmpeg-filters.html#libvmaf)
-- [FFmpeg VMAF usage](https://github.com/Netflix/vmaf/blob/master/resource/doc/ffmpeg.md)
+- [FFmpeg VMAF usage guide](https://github.com/Netflix/vmaf/blob/master/resource/doc/ffmpeg.md)
 
-### Test sources for training models
+### Test media for model training
 
 - [4K Media](https://4kmedia.org/)
 - [Xiph.org Video Test Media](https://media.xiph.org/video/)
