@@ -4,8 +4,9 @@ Thank you for your interest in contributing.
 
 ## Prerequisites
 
-- [Go](https://go.dev/dl/) 1.22+
-- [FFmpeg](https://ffmpeg.org/download.html) with libvmaf support
+- [Go](https://go.dev/dl/) 1.24+
+- [FFmpeg](https://ffmpeg.org/download.html) and ffprobe
+- The `vmaf` CLI from libvmaf 3.2.1 or newer, for integration tests (`make vmaf` builds it)
 - [MediaInfo](https://mediaarea.net/en/MediaInfo/Download) CLI
 - [gofumpt](https://github.com/mvdan/gofumpt) for formatting
 - [golangci-lint](https://golangci-lint.run/welcome/install/) v2+
@@ -45,7 +46,8 @@ make test
 - Integration tests use `//go:build integration` and require media fixtures in `fixtures/media/`.
 - Use table-driven tests where applicable.
 - Run unit tests: `make test`
-- Run integration tests: `go test -v -race -count=1 -tags=integration ./...`
+- Run integration tests: `VMAF_BIN=/path/to/vmaf make test-integration`. They skip when the binary can't score VMAF v1, and the fixture tests skip until `make test-fixtures` has run.
+- Search changes should keep `TestSearch_Simulation` passing. It runs the search over hundreds of random VMAF curves and fails if any result lands below target.
 
 ## Reporting issues
 
@@ -54,4 +56,4 @@ Open a GitHub issue with:
 - What you expected to happen
 - What actually happened
 - Steps to reproduce
-- FFmpeg version, OS, and Go version
+- FFmpeg version, `vmaf --version`, OS, and Go version

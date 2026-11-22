@@ -5,10 +5,10 @@ package commands
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
 	"github.com/terranvigil/dynamic-crf/model"
 	"github.com/terranvigil/dynamic-crf/testutil"
 )
@@ -26,10 +26,8 @@ func TestNewFfprobeKeyframes(t *testing.T) {
 	for _, tt := range tests {
 		l := testutil.GetTestLogger(t)
 		t.Run(tt.name, func(t *testing.T) {
-			path := testutil.GetFixturePath(t, testutil.FixtureTypeMedia, tt.source)
-			filepath, err := os.Open(path)
-			assert.NoError(t, err)
-			proc := NewFfprobeKeyframes(l, filepath)
+			path := testutil.MediaFixture(t, tt.source)
+			proc := NewFfprobeKeyframes(l, path)
 			result, err := proc.Run(context.Background())
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
