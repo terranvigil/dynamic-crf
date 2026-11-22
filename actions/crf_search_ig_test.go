@@ -4,215 +4,290 @@ package actions
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/terranvigil/dynamic-crf/commands"
+	"github.com/terranvigil/dynamic-crf/testutil"
 )
 
-func fixtureDir() string {
-	_, f, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(f), "..", "fixtures", "media")
-}
+var igLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-func shortFixture() string {
-	return filepath.Join(fixtureDir(), "sintel_trailer_1080p.y4m")
-}
+// sintel trailer, about 52s of 1080p24 y4m: under the sampling threshold
+const shortFixture = "sintel_trailer_1080p.y4m"
 
-func longFixture() string {
-	return filepath.Join(fixtureDir(), "big_buck_bunny_120s_1080p.mp4")
-}
+// big buck bunny, 120s of near-lossless 1080p24 mp4: sampled
+const longFixture = "big_buck_bunny_120s_1080p.mp4"
 
-func skipIfNoFixture(t *testing.T, path string) {
+func requireVMAFv1(t *testing.T) commands.VMAFOptions {
 	t.Helper()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Skipf("fixture not found: %s (run scripts/setup-test-fixtures.sh)", path)
+	opts := commands.VMAFOptions{ModelDir: os.Getenv("VMAF_MODEL_DIR")}
+	if err := commands.CheckVMAF(context.Background(), igLogger, opts); err != nil {
+		t.Skipf("vmaf binary can't score VMAF v1, set VMAF_BIN: %v", err)
+	}
+	return opts
+}
+
+func igParams(target float64) SearchParams {
+	return SearchParams{
+		TargetVMAF:      target,
+		Tolerance:       0.5,
+		CRFLow:          15,
+		CRFHigh:         30,
+		CRFInitial:      20,
+		CRFStep:         1,
+		Policy:          PolicyFloor,
+		CoarseSubsample: DefaultCoarseSubsample,
 	}
 }
 
-// TestCrfSearch_Integration_ShortClip tests the full CRF search pipeline
-// against the Sintel trailer (~52s, under the 60s scene sampling threshold).
-// Validates that the returned CRF achieves a VMAF within tolerance of the target.
-func TestCrfSearch_Integration_ShortClip(t *testing.T) {
-	source := shortFixture()
-	skipIfNoFixture(t, source)
+var igConfig = commands.TranscodeConfig{VideoCodec: "libx264", Preset: "veryfast"}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+// exactScore encodes source at crf and scores every frame against it.
+func exactScore(t *testing.T, source string, crf float64, opts commands.VMAFOptions) float64 {
+	t.Helper()
+	s, err := NewEncodeScorer(igLogger, igConfig, source, opts)
+	require.NoError(t, err)
+	defer s.Close() //nolint:errcheck
+	res, err := s.Score(context.Background(), crf, 1)
+	require.NoError(t, err)
+	return res.VMAF
+}
 
-	tests := []struct {
-		name       string
-		targetVMAF float64
-		tolerance  float64
-		codec      string
-		height     int // 0 = native resolution
-	}{
-		{
-			name:       "target 95 native resolution",
-			targetVMAF: 95.0,
-			tolerance:  0.5,
-			codec:      "libx264",
-		},
-		{
-			name:       "target 93 native resolution",
-			targetVMAF: 93.0,
-			tolerance:  0.5,
-			codec:      "libx264",
-		},
-	}
+// TestCrfSearch_Integration_Synthetic runs the whole search, scene sampling
+// included, on a generated clip, so it works without the media fixtures.
+func TestCrfSearch_Integration_Synthetic(t *testing.T) {
+	opts := requireVMAFv1(t)
+	src := testutil.SyntheticClip(t, t.TempDir(), "src.mkv", 4, 2, "640x360")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := commands.TranscodeConfig{
-				VideoCodec: tt.codec,
-				Height:     tt.height,
+	for _, sample := range []bool{false, true} {
+		name := "full source"
+		if sample {
+			name = "scene sample"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := NewCrfSearch(igLogger, src, igParams(93), igConfig, opts)
+			if sample {
+				s.sceneSampleMinDurSec = 1
 			}
-
-			search := NewCrfSearch(logger, source, tt.targetVMAF, 20, 30, 15, tt.tolerance, cfg)
-			crf, vmaf, err := search.Run(context.Background())
+			res, err := s.Run(context.Background())
 			require.NoError(t, err)
-
-			t.Logf("target=%.1f found CRF=%d VMAF=%.2f", tt.targetVMAF, crf, vmaf)
-
-			assert.GreaterOrEqual(t, crf, 15, "CRF should be within search bounds")
-			assert.LessOrEqual(t, crf, 30, "CRF should be within search bounds")
-
-			// verify the result by doing a full-accuracy VMAF score
-			verifyScore := verifyVMAF(t, logger, source, crf, cfg)
-			t.Logf("verification VMAF=%.2f (search reported %.2f)", verifyScore, vmaf)
-
-			// the verified score should be close to what the search reported
-			// allow some delta because search uses subsampled scoring
-			assert.InDelta(t, vmaf, verifyScore, 2.0, "search VMAF should be close to full-accuracy VMAF")
-
-			// the verified score should be reasonably close to the target
-			// integer CRF granularity means we can't always hit within tolerance
-			assert.InDelta(t, tt.targetVMAF, verifyScore, 3.0,
-				fmt.Sprintf("verified VMAF %.2f should be near target %.1f", verifyScore, tt.targetVMAF))
+			t.Logf("%+v", res)
+			assert.Equal(t, "vmaf_v1.0.16_3d0h", res.Model)
+			assert.True(t, res.Exact)
+			if res.Status != StatusTargetExceeded && res.Status != StatusUnreachable {
+				assert.GreaterOrEqual(t, res.VMAF, 93.0)
+			}
+			assert.LessOrEqual(t, res.Encodes, 6)
 		})
 	}
 }
 
-// TestCrfSearch_Integration_SceneSampling tests the scene sampling path
-// using Big Buck Bunny (~10min), which is well over the 60s threshold
-// and triggers scene detection and sample creation.
+// TestCrfSearch_Integration_ShortClip searches the full Sintel trailer and
+// checks the floor contract against independent encodes.
+func TestCrfSearch_Integration_ShortClip(t *testing.T) {
+	opts := requireVMAFv1(t)
+	source := testutil.MediaFixture(t, shortFixture)
+
+	for _, target := range []float64{93, 95} {
+		t.Run(commands.FormatCRF(target), func(t *testing.T) {
+			res, err := NewCrfSearch(igLogger, source, igParams(target), igConfig, opts).Run(context.Background())
+			require.NoError(t, err)
+			t.Logf("%+v", res)
+			require.Contains(t, []Status{StatusConverged, StatusBracketed}, res.Status)
+			assert.GreaterOrEqual(t, res.VMAF, target)
+			assert.LessOrEqual(t, res.Scores, 7, "coarse probes plus exact re-scores")
+
+			if res.CRF < 30 {
+				next := exactScore(t, source, res.CRF+1, opts)
+				t.Logf("crf %g scores %.2f", res.CRF+1, next)
+				if res.Status == StatusBracketed {
+					assert.Less(t, next, target, "crf %g should be the highest meeting the target", res.CRF)
+				}
+			}
+		})
+	}
+}
+
+// TestCrfSearch_Integration_SceneSampling searches Big Buck Bunny on a scene
+// sample and checks the result carries over to the full two minutes.
 func TestCrfSearch_Integration_SceneSampling(t *testing.T) {
-	source := longFixture()
-	skipIfNoFixture(t, source)
+	opts := requireVMAFv1(t)
+	source := testutil.MediaFixture(t, longFixture)
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	cfg := commands.TranscodeConfig{
-		VideoCodec: "libx264",
-	}
-
-	search := NewCrfSearch(logger, source, 95.0, 20, 30, 15, 0.5, cfg)
-	crf, vmaf, err := search.Run(context.Background())
+	res, err := NewCrfSearch(igLogger, source, igParams(95), igConfig, opts).Run(context.Background())
 	require.NoError(t, err)
+	t.Logf("%+v", res)
+	assert.GreaterOrEqual(t, res.VMAF, 95.0)
 
-	t.Logf("found CRF=%d VMAF=%.2f (via scene sampling)", crf, vmaf)
-
-	assert.GreaterOrEqual(t, crf, 15)
-	assert.LessOrEqual(t, crf, 30)
-
-	// verify against the full source at full accuracy
-	// the sample-based search should generalize well to the full video
-	verifyScore := verifyVMAF(t, logger, source, crf, cfg)
-	t.Logf("full-source verification VMAF=%.2f (sample-based search reported %.2f)", verifyScore, vmaf)
-
-	assert.InDelta(t, 95.0, verifyScore, 4.0,
-		"full-source VMAF should be near target even though search used a scene sample")
+	full := exactScore(t, source, res.CRF, opts)
+	t.Logf("full-source vmaf %.2f at crf %g (sample said %.2f)", full, res.CRF, res.VMAF)
+	assert.InDelta(t, res.VMAF, full, 2.0, "sample should generalize to the full source")
 }
 
-// TestCrfSearch_Integration_Efficiency verifies the hybrid bisection search
-// uses fewer scoring iterations than a naive linear scan would require.
-func TestCrfSearch_Integration_Efficiency(t *testing.T) {
-	source := shortFixture()
-	skipIfNoFixture(t, source)
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-	cfg := commands.TranscodeConfig{
-		VideoCodec: "libx264",
-	}
-
-	var calls int
-	search := NewCrfSearch(logger, source, 95.0, 20, 30, 15, 0.5, cfg)
-
-	// wrap the real scoring function to count calls
-	originalScoreFn := search.getScoreFn()
-	search.scoreFn = func(ctx context.Context, samplePath string, crf int) (float64, error) {
-		calls++
-		return originalScoreFn(ctx, samplePath, crf)
-	}
-
-	crf, vmaf, err := search.Run(context.Background())
-	require.NoError(t, err)
-
-	t.Logf("found CRF=%d VMAF=%.2f in %d scoring calls", crf, vmaf, calls)
-
-	// CRF range is 15-30 = 16 possible values
-	// linear scan would need up to 16 calls
-	// hybrid bisection should need far fewer
-	assert.LessOrEqual(t, calls, 8,
-		fmt.Sprintf("hybrid search used %d calls, should be significantly fewer than linear scan of 16", calls))
-}
-
-// TestOptimizedEncode_Integration tests the full optimize pipeline:
-// search for CRF, encode full video, and VMAF-score the result.
 func TestOptimizedEncode_Integration(t *testing.T) {
-	source := shortFixture()
-	skipIfNoFixture(t, source)
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	src := testutil.SyntheticClip(t, dir, "src.mkv", 3, 2, "640x360")
+	out := filepath.Join(dir, "out.mp4")
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	target, err := os.CreateTemp("", "optimize_test_*.mp4")
+	cfg := igConfig
+	cfg.AudioCodec = "copy"
+	res, err := NewOptimizedEncode(igLogger, cfg, src, out, igParams(93), opts).Run(context.Background())
 	require.NoError(t, err)
-	defer os.Remove(target.Name()) //nolint:errcheck
+	t.Logf("%+v", res)
 
-	cfg := commands.TranscodeConfig{
-		VideoCodec: "libx264",
+	info, err := os.Stat(out)
+	require.NoError(t, err)
+	assert.Positive(t, info.Size())
+	assert.Equal(t, out, res.Output)
+	if res.Search.Status != StatusTargetExceeded && res.Search.Status != StatusUnreachable {
+		assert.GreaterOrEqual(t, res.VMAF, 93.0)
 	}
-
-	opt := NewOptimizedEncoded(logger, cfg, source, target.Name(), 95.0, 20, 30, 15, 0.5)
-	err = opt.Run(context.Background())
-	require.NoError(t, err)
-
-	// verify output file exists and is non-empty
-	info, err := os.Stat(target.Name())
-	require.NoError(t, err)
-	assert.Greater(t, info.Size(), int64(0), "output file should not be empty")
-
-	// verify VMAF of the actual output
-	score, err := commands.NewFfmpegVMAF(logger, target.Name(), source, 1).Run(context.Background())
-	require.NoError(t, err)
-	t.Logf("optimized encode VMAF=%.2f", score)
-
-	assert.Greater(t, score, 90.0, "optimized encode should achieve high VMAF")
 }
 
-// verifyVMAF encodes at a given CRF and scores with full accuracy (speed=1)
-func verifyVMAF(t *testing.T, logger *slog.Logger, source string, crf int, cfg commands.TranscodeConfig) float64 {
-	t.Helper()
+// MPEG-TS starts its clock at 1.4s or later. scene times used to come out
+// absolute while -ss is relative, so every scene started late and the last
+// one seeked past the end.
+func TestCrfSearch_Integration_TSStartTime(t *testing.T) {
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	src := testutil.SyntheticClip(t, dir, "src.mkv", 4, 2.5, "640x360")
+	ts := filepath.Join(dir, "src.ts")
+	enc := commands.TranscodeConfig{VideoCodec: "libx264", VideoCRF: 4, Preset: "veryfast"}
+	require.NoError(t, commands.NewFfmpegEncode(igLogger, src, filepath.Join(dir, "tmp.mp4"), enc).Run(context.Background()))
+	out, err := exec.Command("ffmpeg", "-v", "error", "-i", filepath.Join(dir, "tmp.mp4"), "-c", "copy", "-y", ts).CombinedOutput()
+	require.NoError(t, err, string(out))
 
-	tmpEncode, err := os.CreateTemp("", "verify_*.mp4")
+	s := NewCrfSearch(igLogger, ts, igParams(93), igConfig, opts)
+	s.sceneSampleMinDurSec = 1
+	res, err := s.Run(context.Background())
 	require.NoError(t, err)
-	defer os.Remove(tmpEncode.Name()) //nolint:errcheck
+	t.Logf("%+v", res)
+	assert.Greater(t, res.VMAF, 80.0, "a desynced sample scores far lower")
+}
 
-	verifyCfg := cfg
-	verifyCfg.VideoCRF = crf
-	err = commands.NewFfmpegEncode(logger, source, tmpEncode.Name(), verifyCfg).Run(context.Background())
+// a rotated source decodes at its displayed size; the encode used to be
+// scored against the coded size and fail on mismatched dimensions
+func TestCrfSearch_Integration_RotatedSource(t *testing.T) {
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	src := testutil.SyntheticClip(t, dir, "src.mkv", 1, 2, "640x360")
+	rot := filepath.Join(dir, "rot.mp4")
+	enc := commands.TranscodeConfig{VideoCodec: "libx264", VideoCRF: 4, Preset: "veryfast"}
+	require.NoError(t, commands.NewFfmpegEncode(igLogger, src, filepath.Join(dir, "tmp.mp4"), enc).Run(context.Background()))
+	out, err := exec.Command("ffmpeg", "-v", "error", "-display_rotation", "90", "-i", filepath.Join(dir, "tmp.mp4"), "-c", "copy", "-y", rot).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	scorer, err := NewEncodeScorer(igLogger, igConfig, rot, opts)
 	require.NoError(t, err)
-
-	// speed=1 for highest accuracy verification
-	score, err := commands.NewFfmpegVMAF(logger, tmpEncode.Name(), source, 1).Run(context.Background())
+	defer scorer.Close() //nolint:errcheck
+	sc, err := scorer.Score(context.Background(), 20, 1)
 	require.NoError(t, err)
+	assert.Greater(t, sc.VMAF, 80.0)
+}
 
-	return score
+// a variable-rate source and its encode can probe to different average rates;
+// resampling one side used to desync the legs and score in the teens
+func TestCrfSearch_Integration_VariableFrameRate(t *testing.T) {
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	vfr := filepath.Join(dir, "vfr.mkv")
+	out, err := exec.Command("ffmpeg", "-v", "error",
+		"-f", "lavfi", "-t", "2", "-i", "testsrc2=size=640x360:rate=24",
+		"-f", "lavfi", "-t", "2", "-i", "mandelbrot=size=640x360:rate=60",
+		"-filter_complex", "[0:v]format=yuv420p,setsar=1[a];[1:v]format=yuv420p,setsar=1[b];[a][b]concat=n=2:v=1[v]",
+		"-map", "[v]", "-fps_mode", "vfr", "-c:v", "ffv1", "-y", vfr).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	res, err := NewCrfSearch(igLogger, vfr, igParams(93), igConfig, opts).Run(context.Background())
+	require.NoError(t, err)
+	t.Logf("%+v", res)
+	assert.Greater(t, res.VMAF, 80.0)
+}
+
+// container duration includes audio; a source whose audio outlasts its video
+// used to fail every score on the frame-count check
+func TestCrfSearch_Integration_AudioLongerThanVideo(t *testing.T) {
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "long_audio.mp4")
+	out, err := exec.Command("ffmpeg", "-v", "error",
+		"-f", "lavfi", "-t", "3", "-i", "testsrc2=size=640x360:rate=24",
+		"-f", "lavfi", "-t", "5", "-i", "sine=frequency=440",
+		"-c:v", "libx264", "-crf", "4", "-preset", "veryfast", "-c:a", "aac", "-y", src).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	res, err := NewCrfSearch(igLogger, src, igParams(93), igConfig, opts).Run(context.Background())
+	require.NoError(t, err)
+	t.Logf("%+v", res)
+}
+
+// a stream-copy trim leaves an mp4 edit list: nb_frames counts frames the
+// decoder never shows, and the old frame check failed every score
+func TestCrfSearch_Integration_EditListTrim(t *testing.T) {
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	full := filepath.Join(dir, "full.mp4")
+	trim := filepath.Join(dir, "trim.mp4")
+	out, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-t", "6", "-i", "testsrc2=size=640x360:rate=24",
+		"-c:v", "libx264", "-crf", "4", "-preset", "veryfast", "-g", "240", "-y", full).CombinedOutput()
+	require.NoError(t, err, string(out))
+	out, err = exec.Command("ffmpeg", "-v", "error", "-ss", "3", "-i", full, "-c", "copy", "-y", trim).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	res, err := NewCrfSearch(igLogger, trim, igParams(93), igConfig, opts).Run(context.Background())
+	require.NoError(t, err)
+	t.Logf("%+v", res)
+}
+
+// libvmaf rejects CAMBI encode sizes far below the scoring size; a 144p rung
+// of a 360p source used to be unscoreable
+func TestEncodeScorer_Integration_SmallRung(t *testing.T) {
+	opts := requireVMAFv1(t)
+	src := testutil.SyntheticClip(t, t.TempDir(), "src.mkv", 1, 2, "640x360")
+	cfg := igConfig
+	cfg.Height = 144
+	s, err := NewEncodeScorer(igLogger, cfg, src, opts)
+	require.NoError(t, err)
+	defer s.Close() //nolint:errcheck
+	sc, err := s.Score(context.Background(), 23, 1)
+	require.NoError(t, err)
+	assert.Positive(t, sc.VMAF)
+}
+
+// a long variable-rate source goes through the scene sampler, whose FFV1
+// output probes as constant rate; the old frame estimate failed every score
+func TestCrfSearch_Integration_LongVariableFrameRate(t *testing.T) {
+	opts := requireVMAFv1(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "vfr_long.mkv")
+	var args []string
+	var filter string
+	const parts = 14
+	for i := range parts {
+		rate := []string{"30", "24"}[i%2]
+		args = append(args, "-f", "lavfi", "-t", "5", "-i", []string{"testsrc2", "mandelbrot"}[i%2]+"=size=320x240:rate="+rate)
+		filter += "[" + strconv.Itoa(i) + ":v]format=yuv420p,setsar=1[v" + strconv.Itoa(i) + "];"
+	}
+	for i := range parts {
+		filter += "[v" + strconv.Itoa(i) + "]"
+	}
+	filter += "concat=n=" + strconv.Itoa(parts) + ":v=1[out]"
+	args = append([]string{"-v", "error"}, args...)
+	args = append(args, "-filter_complex", filter, "-map", "[out]", "-fps_mode", "vfr", "-c:v", "libx264", "-crf", "4", "-preset", "ultrafast", "-y", src)
+	out, err := exec.Command("ffmpeg", args...).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	res, err := NewCrfSearch(igLogger, src, igParams(90), igConfig, opts).Run(context.Background())
+	require.NoError(t, err)
+	t.Logf("%+v", res)
+	assert.Greater(t, res.VMAF, 70.0)
 }

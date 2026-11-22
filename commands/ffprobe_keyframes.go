@@ -6,21 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 
 	"github.com/terranvigil/dynamic-crf/model"
 )
 
 type FfprobeKeyframes struct {
-	source *os.File
-	log    *slog.Logger
+	sourcePath string
+	log        *slog.Logger
 }
 
-func NewFfprobeKeyframes(logger *slog.Logger, source *os.File) *FfprobeKeyframes {
+func NewFfprobeKeyframes(logger *slog.Logger, sourcePath string) *FfprobeKeyframes {
 	return &FfprobeKeyframes{
-		log:    logger,
-		source: source,
+		log:        logger,
+		sourcePath: sourcePath,
 	}
 }
 
@@ -36,7 +35,7 @@ func (f *FfprobeKeyframes) Run(ctx context.Context) (*model.FfprobeFrames, error
 		"-skip_frame",
 		"nokey",
 		"-of", "json",
-		"-f", "lavfi", fmt.Sprintf("movie=%s,select=gt(scene\\,.4)", f.source.Name()),
+		"-f", "lavfi", fmt.Sprintf("movie=%s,select=gt(scene\\,.4)", escapeFilterValue(f.sourcePath)),
 	}
 
 	f.log.Info("running ffprobe keyframe inspection")
@@ -45,12 +44,12 @@ func (f *FfprobeKeyframes) Run(ctx context.Context) (*model.FfprobeFrames, error
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffprobe keyframe inspection for %s failed, err: %w, message: %s", f.source.Name(), err, stderr.String())
+		return nil, fmt.Errorf("ffprobe keyframe inspection for %s failed, err: %w, message: %s", f.sourcePath, err, stderr.String())
 	}
 
 	response := model.FfprobeFrames{}
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return nil, fmt.Errorf("ffprobe keyframe inspection for %s failed, unmarshall: err: %w", f.source.Name(), err)
+		return nil, fmt.Errorf("ffprobe keyframe inspection for %s failed, unmarshall: err: %w", f.sourcePath, err)
 	}
 
 	return &response, nil

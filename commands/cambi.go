@@ -1,150 +1,76 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
-	"regexp"
-	"strconv"
-	"sync"
-	"syscall"
-
-	"github.com/google/uuid"
-
-	"github.com/terranvigil/dynamic-crf/model"
 )
 
-// max="18.491441" mean="0.301510"
-const cambiREString = "max=\"(\\d+\\.\\d+)\".*mean=\"(\\d+\\.\\d+)\""
-
-var cambiRE = regexp.MustCompile(cambiREString)
-
+// Cambi measures banding in an encode with Netflix's CAMBI. CAMBI is a
+// no-reference metric, so only the distorted file is read; the vmaf CLI still
+// wants two inputs, so it's handed the distorted on both.
 type Cambi struct {
 	logger        *slog.Logger
-	referencePath string
 	distortedPath string
+	opts          VMAFOptions
 }
 
-func NewCambi(logger *slog.Logger, distorted string, reference string) *Cambi {
+// CambiResult is CAMBI pooled over frames. Higher means more banding; under
+// 5 is generally not visible.
+type CambiResult struct {
+	Max  float64
+	Mean float64
+}
+
+func NewCambi(logger *slog.Logger, distorted string, opts VMAFOptions) *Cambi {
 	return &Cambi{
 		logger:        logger,
 		distortedPath: distorted,
-		referencePath: reference,
+		opts:          opts,
 	}
 }
 
-func (c *Cambi) Run(ctx context.Context) (float64, float64, error) {
-	var stderr, stdout bytes.Buffer
-
-	var refMeta, distMeta *model.MediaInfo
-	var err error
-	if refMeta, err = NewMediaInfo(c.logger, c.referencePath).Run(ctx); err != nil {
-		return 0, 0, fmt.Errorf("failed to get mediainfo of reference, err: %w", err)
-	}
-	if distMeta, err = NewMediaInfo(c.logger, c.distortedPath).Run(ctx); err != nil {
-		return 0, 0, fmt.Errorf("failed to get mediainfo of distorted, err: %w", err)
+func (c *Cambi) Run(ctx context.Context) (*CambiResult, error) {
+	dist, err := ProbeVideo(ctx, c.logger, c.distortedPath)
+	if err != nil {
+		return nil, fmt.Errorf("probe distorted: %w", err)
 	}
 
-	if len(refMeta.GetVideoTracks()) == 0 {
-		return 0, 0, errors.New("reference has no video tracks")
+	if max(dist.Width, dist.Height) < cambiMinLongSide {
+		return nil, fmt.Errorf("CAMBI can't score a %dx%d picture (it needs a long side of at least %d)",
+			dist.Width, dist.Height, cambiMinLongSide)
 	}
-	if len(distMeta.GetVideoTracks()) == 0 {
-		return 0, 0, errors.New("distorted has no video tracks")
+	if dist.Width+dist.Height > cambiMaxWidthPlusHeight {
+		return nil, fmt.Errorf("CAMBI can't score a %dx%d picture (libvmaf's limit is width plus height %d, just past UHD 4K); scale it down first",
+			dist.Width, dist.Height, cambiMaxWidthPlusHeight)
 	}
-	distW := distMeta.GetVideoTracks()[0].Width
-	distH := distMeta.GetVideoTracks()[0].Height
+	leg := pipeLeg{input: c.distortedPath, pixFmt: cambiPixFmt(dist.BitDepth)}
+	args := []string{"--threads", fmt.Sprint(c.opts.threads()), "--no_prediction", "--feature", "cambi"}
 
-	pipe1Path := os.TempDir() + "pipe1_" + uuid.New().String() + ".yuv"
-	pipe2Path := os.TempDir() + "pipe2_" + uuid.New().String() + ".yuv"
-	if err := syscall.Mkfifo(pipe1Path, 0o666); err != nil {
-		return 0, 0, fmt.Errorf("failed to create named pipe: %w", err)
+	c.logger.Info("running cambi", "distorted", c.distortedPath, "pixFmt", leg.pixFmt)
+	out, err := runVMAFPipes(ctx, c.logger, c.opts.bin(), leg, leg, args)
+	if err != nil {
+		return nil, fmt.Errorf("cambi of %s: %w", c.distortedPath, err)
 	}
-	defer os.Remove(pipe1Path) //nolint:errcheck
-	if err := syscall.Mkfifo(pipe2Path, 0o666); err != nil {
-		return 0, 0, fmt.Errorf("failed to create named pipe: %w", err)
+	pooled, ok := out.PooledMetrics["cambi"]
+	if !ok {
+		return nil, errors.New("vmaf output has no cambi pooled metric")
 	}
-	defer os.Remove(pipe2Path) //nolint:errcheck
-
-	args := []string{
-		"--reference", pipe1Path,
-		"--distorted", pipe2Path,
-		"--width", strconv.Itoa(distW),
-		"--height", strconv.Itoa(distH),
-		"--pixel_format", "420",
-		"--bitdepth", "8",
-		"--no_prediction",
-		"--feature", "cambi",
-		"--output", "/dev/stdout",
-	}
-
-	c.logger.Info("running cambi", "distorted", c.distortedPath, "reference", c.referencePath)
-	c.logger.Debug("cambi", "args", args)
-
-	var (
-		decodeErrs [2]error
-		wg         sync.WaitGroup
-	)
-	wg.Add(2) //nolint:mnd
-	go func() {
-		defer wg.Done()
-		decodeErrs[0] = c.decode(ctx, c.distortedPath, pipe1Path)
-	}()
-	go func() {
-		defer wg.Done()
-		decodeErrs[1] = c.decode(ctx, c.distortedPath, pipe2Path)
-	}()
-
-	cmd := exec.CommandContext(ctx, "vmaf", args...)
-	cmd.Stderr = &stderr
-	cmd.Stdout = &stdout
-	if err = cmd.Run(); err != nil {
-		wg.Wait()
-		return 0, 0, fmt.Errorf("cambi of distorted: %s, reference: %s failed, err: %w, message: %s", c.distortedPath, c.referencePath, err, stderr.String())
-	}
-
-	wg.Wait()
-	for _, derr := range decodeErrs {
-		if derr != nil {
-			return 0, 0, fmt.Errorf("decode for cambi failed: %w", derr)
-		}
-	}
-
-	matches := cambiRE.FindStringSubmatch(stdout.String())
-	if len(matches) != 3 { //nolint:mnd
-		return 0, 0, errors.New("failed to parse cambi score from output")
-	}
-
-	var max, mean float64
-	if max, err = strconv.ParseFloat(matches[1], 64); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse max cambi score, err: %w", err)
-	}
-	if mean, err = strconv.ParseFloat(matches[2], 64); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse mean cambi score, err: %w", err)
-	}
-
-	return max, mean, nil
+	return &CambiResult{Max: pooled.Max, Mean: pooled.Mean}, nil
 }
 
-func (c *Cambi) decode(ctx context.Context, sourcePath, pipePath string) error {
-	var stderr bytes.Buffer
+// standalone CAMBI's window outgrows libvmaf 3.2.1's lookup table just past
+// UHD 4K: width plus height 6,092 works (3932x2160), 6,094 doesn't
+const cambiMaxWidthPlusHeight = 6092
 
-	args := []string{
-		"-i", sourcePath,
-		"-c:v", "rawvideo",
-		"-pix_fmt", "yuv420p",
-		"-y", pipePath,
+// below this on its longer side libvmaf can't read the picture for CAMBI
+const cambiMinLongSide = 216
+
+// cambiPixFmt keeps the encode's own depth: CAMBI's banding thresholds depend on it.
+func cambiPixFmt(bitDepth int) string {
+	if bitDepth > 8 { //nolint:mnd
+		return "yuv420p10le"
 	}
-
-	c.logger.Debug("running ffmpeg decode to pipe", "pipe", pipePath)
-
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg decode to pipe %s failed, err: %w, message: %s", pipePath, err, stderr.String())
-	}
-	return nil
+	return "yuv420p"
 }

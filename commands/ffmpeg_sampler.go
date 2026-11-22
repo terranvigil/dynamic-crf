@@ -7,97 +7,119 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/terranvigil/dynamic-crf/model"
 )
+
+// SampleExt is the container the sampler writes. The sample is lossless FFV1,
+// so any source codec and pixel format survives and scenes start exactly
+// where they were detected rather than at the next keyframe.
+const SampleExt = ".mkv"
+
+// a sample shorter than this share of the requested frames lost scenes
+const sampleMinFraction = 0.9
 
 type FfmpegSampler struct {
 	logger           *slog.Logger
 	sourcePath       string
 	sampleOutputPath string
-	fps              float64
 	scenes           []model.Scene
 }
 
-func NewFfmpegSampler(log *slog.Logger, sourcePath string, samplePath string, fps float64, scenes []model.Scene) *FfmpegSampler {
+func NewFfmpegSampler(log *slog.Logger, sourcePath string, samplePath string, scenes []model.Scene) *FfmpegSampler {
 	return &FfmpegSampler{
 		logger:           log,
 		sourcePath:       sourcePath,
 		sampleOutputPath: samplePath,
-		fps:              fps,
 		scenes:           scenes,
 	}
 }
 
 func (s *FfmpegSampler) Run(ctx context.Context) error {
-	var stderr bytes.Buffer
+	var totalDur float64
+	for _, scene := range s.scenes {
+		totalDur += scene.Duration
+	}
+	s.logger.Info("running ffmpeg sampler", "scenes", len(s.scenes), "sampleDuration", fmt.Sprintf("%.2fs", totalDur))
 
-	totalDur := func() float64 {
-		var total float64
-		for _, scene := range s.scenes {
-			total += scene.Duration
-		}
-		return total
-	}()
-	s.logger.Info("running ffmpeg sampler", "sampleDuration", fmt.Sprintf("%.2fs", totalDur))
+	dir, err := os.MkdirTemp("", "dcrf_sample_*")
+	if err != nil {
+		return fmt.Errorf("create sample temp dir: %w", err)
+	}
+	defer os.RemoveAll(dir) //nolint:errcheck
 
-	// collect temp paths for cleanup after concat
-	var tempPaths []string
-	defer func() {
-		for _, p := range tempPaths {
-			os.Remove(p) //nolint:errcheck
-		}
-	}()
-
+	var list strings.Builder
 	for i, scene := range s.scenes {
-		s.logger.Info("extracting scene", "scene", i+1, "start", fmt.Sprintf("%.2fs", scene.StartPTSSec), "duration", fmt.Sprintf("%.2fs", scene.Duration))
-
-		f, err := os.CreateTemp("", "smpl_*.ts")
-		if err != nil {
-			return fmt.Errorf("failed to create temp file for scene sample: %w", err)
+		s.logger.Debug("extracting scene", "scene", i+1, "start", fmt.Sprintf("%.2fs", scene.StartPTSSec), "duration", fmt.Sprintf("%.2fs", scene.Duration))
+		part := filepath.Join(dir, fmt.Sprintf("scene_%03d%s", i, SampleExt))
+		if err := s.run(ctx, sceneArgs(s.sourcePath, part, scene)); err != nil {
+			return fmt.Errorf("extract scene %d at %.2fs: %w", i+1, scene.StartPTSSec, err)
 		}
-		tempPaths = append(tempPaths, f.Name())
-
-		args := []string{
-			"-hide_banner",
-			"-i", s.sourcePath,
-			"-ss", fmt.Sprintf("%.2f", scene.StartPTSSec),
-			"-frames:v", strconv.Itoa(int(s.fps * scene.Duration)),
-			"-c:v", "copy",
-			"-an",
-			"-y", f.Name(),
-		}
-		s.logger.Debug("ffmpeg sample extract", "args", args)
-
-		stderr.Reset()
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		cmd.Stderr = &stderr
-		if err = cmd.Run(); err != nil {
-			return fmt.Errorf("ffmpeg sample creation %s failed, err: %w, message: %s", f.Name(), err, stderr.String())
-		}
+		list.WriteString("file " + concatQuote(part) + "\n")
 	}
 
-	var concat string
-	for _, path := range tempPaths {
-		if concat == "" {
-			concat = "concat:" + path
-		} else {
-			concat += "|" + path
-		}
+	listPath := filepath.Join(dir, "scenes.txt")
+	if err := os.WriteFile(listPath, []byte(list.String()), 0o600); err != nil {
+		return fmt.Errorf("write concat list: %w", err)
 	}
-	args := []string{
-		"-hide_banner",
-		"-i", concat,
-		"-c:v", "copy",
-		"-y", s.sampleOutputPath,
+	args := []string{"-hide_banner", "-nostdin", "-v", "error", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-y", safeOutPath(s.sampleOutputPath)}
+	if err := s.run(ctx, args); err != nil {
+		return fmt.Errorf("concat scenes: %w", err)
 	}
-	stderr.Reset()
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	return s.verify(ctx)
+}
+
+// verify catches parts that came out empty, e.g. a seek past the end, which
+// concat skips without complaint.
+func (s *FfmpegSampler) verify(ctx context.Context) error {
+	var want float64
+	for _, scene := range s.scenes {
+		want += scene.Duration
+	}
+	info, err := ProbeVideo(ctx, s.logger, s.sampleOutputPath)
+	if err != nil {
+		return fmt.Errorf("probe sample: %w", err)
+	}
+	if info.Duration < sampleMinFraction*want {
+		return fmt.Errorf("sample is %.1fs, expected %.1fs; some scenes came out empty", info.Duration, want)
+	}
+	return nil
+}
+
+func (s *FfmpegSampler) run(ctx context.Context, args []string) error {
+	s.logger.Debug("ffmpeg sampler", "args", args)
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg sample concat %s failed, err: %w, message: %s", concat, err, stderr.String())
+		return fmt.Errorf("%w: %s", err, tail(stderr.String()))
 	}
-
 	return nil
+}
+
+// sceneArgs seeks on the input side while transcoding, which ffmpeg does
+// frame-accurately, and writes intra-only FFV1 so the parts concat cleanly.
+func sceneArgs(source, out string, scene model.Scene) []string {
+	return []string{
+		"-hide_banner", "-nostdin", "-v", "error",
+		// 6 places so a 1001-denominator pts doesn't round past its frame
+		"-ss", strconv.FormatFloat(scene.StartPTSSec, 'f', 6, 64),
+		"-i", source,
+		"-map", "0:V:0",
+		// a duration, since a frame count is wrong on variable-rate sources
+		"-t", strconv.FormatFloat(scene.Duration, 'f', 6, 64),
+		// zero-based parts concat without gaps whatever the source's start time
+		"-vf", "setpts=PTS-STARTPTS",
+		"-c:v", "ffv1", "-level", "3", "-g", "1", "-slices", "16", "-slicecrc", "0",
+		"-an", "-sn", "-dn",
+		"-y", out,
+	}
+}
+
+// concatQuote quotes a path for the concat demuxer's list file.
+func concatQuote(p string) string {
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }

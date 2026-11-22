@@ -6,21 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 
 	"github.com/terranvigil/dynamic-crf/model"
 )
 
 type FfprobeMetadata struct {
-	source *os.File
-	log    *slog.Logger
+	sourcePath string
+	log        *slog.Logger
 }
 
-func NewFfprobeMetadata(logger *slog.Logger, source *os.File) *FfprobeMetadata {
+func NewFfprobeMetadata(logger *slog.Logger, sourcePath string) *FfprobeMetadata {
 	return &FfprobeMetadata{
-		source: source,
-		log:    logger,
+		sourcePath: sourcePath,
+		log:        logger,
 	}
 }
 
@@ -34,21 +33,21 @@ func (f *FfprobeMetadata) Run(ctx context.Context) (*model.FfprobeMetadata, erro
 		"-show_format",
 		"-show_streams",
 		"-of", "json",
-		f.source.Name(),
+		"-i", f.sourcePath,
 	}
 
-	f.log.Info("running ffprobe metadata inspection")
+	f.log.Debug("running ffprobe metadata inspection", "path", f.sourcePath)
 
 	cmd := exec.CommandContext(ctx, "ffprobe", args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffprobe inspection for %s failed, err: %w, message: %s", f.source.Name(), err, stderr.String())
+		return nil, fmt.Errorf("ffprobe inspection for %s failed, err: %w, message: %s", f.sourcePath, err, stderr.String())
 	}
 
 	response := model.FfprobeMetadata{}
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return nil, fmt.Errorf("ffprobe inspection for %s failed, unmarshall: err: %w", f.source.Name(), err)
+		return nil, fmt.Errorf("ffprobe inspection for %s failed, unmarshall: err: %w", f.sourcePath, err)
 	}
 
 	return &response, nil

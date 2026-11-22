@@ -4,283 +4,145 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
-
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
 
 	"github.com/terranvigil/dynamic-crf/commands"
 	"github.com/terranvigil/dynamic-crf/inspect"
-	"github.com/terranvigil/dynamic-crf/model"
 )
 
 const (
-	maxSearchIterations       = 20
-	defaultSceneSampleMinDurMs = 60 * 1000
+	defaultSceneSampleMinDurSec = 60
+	// DefaultCoarseSubsample scores every 5th frame while searching. On v1
+	// that moves scores by about 0.2 on short clips, which the exact re-score
+	// of the winner and its near-miss neighbor absorbs.
+	DefaultCoarseSubsample = 5
 )
 
-// CrfSearch will perform a hybrid bisection/interpolation search over CRF values
-// to find the closest match to the target VMAF
+// CrfSearch finds the CRF that meets a target VMAF. Sources of a minute or
+// more are scored on a sample of their sharpest scene cuts rather than in full.
 type CrfSearch struct {
 	logger          *slog.Logger
 	sourcePath      string
-	targetVMAF      float64
-	crfInitial      int
-	crfMin          int
-	crfMax          int
-	tolerance       float64
+	params          SearchParams
 	transcodeConfig commands.TranscodeConfig
-	// scoreFn allows overriding the scoring function for testing
-	scoreFn func(ctx context.Context, samplePath string, crf int) (float64, error)
-	// samplePath overrides sample creation for testing
-	samplePath string
-	// sceneSampleMinDurMs is the minimum source duration (ms) before scene sampling kicks in.
-	// Zero means use the default (60s).
-	sceneSampleMinDurMs float64
+	vmafOpts        commands.VMAFOptions
+	// scoreFn overrides encoding and scoring, for tests
+	scoreFn ScoreFunc
+	// sceneSampleMinDurSec is the source duration at which scene sampling
+	// starts. Zero means 60s.
+	sceneSampleMinDurSec float64
 }
 
-func NewCrfSearch(logger *slog.Logger, source string, targetVMAF float64, crfInitial int, crfMin int, crfMax int, tolerance float64, transcodeConfig commands.TranscodeConfig) *CrfSearch {
+func NewCrfSearch(logger *slog.Logger, source string, params SearchParams, transcodeConfig commands.TranscodeConfig, vmafOpts commands.VMAFOptions) *CrfSearch {
 	return &CrfSearch{
 		logger:          logger,
 		sourcePath:      source,
-		targetVMAF:      targetVMAF,
-		crfInitial:      crfInitial,
-		crfMin:          crfMin,
-		crfMax:          crfMax,
-		tolerance:       tolerance,
+		params:          params,
 		transcodeConfig: transcodeConfig,
+		vmafOpts:        vmafOpts,
 	}
 }
 
-func (c *CrfSearch) Run(ctx context.Context) (selected int, vmaf float64, err error) {
-	c.logger.Info("running dynamic-crf search")
+func (c *CrfSearch) Run(ctx context.Context) (SearchResult, error) {
+	c.logger.Info("running dynamic-crf search", "target", c.params.TargetVMAF, "policy", c.params.Policy,
+		"crfLow", c.params.CRFLow, "crfHigh", c.params.CRFHigh, "crfStep", c.params.CRFStep)
 
-	if err := c.validate(); err != nil {
-		return 0, 0, err
+	if err := c.params.Validate(); err != nil {
+		return SearchResult{}, err
 	}
 
-	score := c.getScoreFn()
+	score := c.scoreFn
+	if score == nil {
+		reference, model, cleanup, err := c.prepare(ctx)
+		if err != nil {
+			return SearchResult{}, err
+		}
+		defer cleanup()
 
-	var sampleName string
-	if c.samplePath != "" {
-		sampleName = c.samplePath
-	} else {
-		var source *os.File
-		if source, err = os.Open(c.sourcePath); err != nil {
-			return 0, 0, fmt.Errorf("failed to open source: %s, err: %w", c.sourcePath, err)
+		// pin the model the source resolved to: a scene sample can probe to a
+		// different rate than its source and would otherwise pick another
+		opts := c.vmafOpts
+		opts.Model = model
+		scorer, err := NewEncodeScorer(c.logger, c.transcodeConfig, reference, opts)
+		if err != nil {
+			return SearchResult{}, err
 		}
-		defer source.Close() //nolint:errcheck
-
-		var metadata *model.MediaInfo
-		if metadata, err = commands.NewMediaInfo(c.logger, c.sourcePath).Run(ctx); err != nil {
-			return 0, 0, fmt.Errorf("failed to get mediainfo of source, err: %w", err)
+		defer scorer.Close() //nolint:errcheck
+		// decide the coarse stride once, so a clip short enough to score every
+		// frame doesn't get a second identical "exact" pass
+		if c.params.CoarseSubsample, err = scorer.EffectiveSubsample(ctx, c.params.CoarseSubsample); err != nil {
+			return SearchResult{}, err
 		}
-		minDurMs := c.sceneSampleMinDurMs
-		if minDurMs == 0 {
-			minDurMs = defaultSceneSampleMinDurMs
-		}
-		// mediainfo reports duration in ms for most containers, but in seconds
-		// for raw formats like y4m. Normalize to ms.
-		durationMs := metadata.GetContainer().Duration
-		if durationMs < 1000 {
-			durationMs *= 1000
-		}
-		if durationMs < minDurMs {
-			c.logger.Info("source is less than 60 seconds, skipping creation of shots sample")
-			sampleName = source.Name()
-		} else {
-			sampleEncode, err := c.createSceneSample(ctx)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to create scene sample, err: %w", err)
-			}
-			defer os.Remove(sampleEncode.Name()) //nolint:errcheck
-			sampleName = sampleEncode.Name()
-		}
+		score = scorer.Score
 	}
 
-	// get vmaf of initial CRF
-	var initialScore float64
-	if initialScore, err = score(ctx, sampleName, c.crfInitial); err != nil {
-		return selected, vmaf, err
-	}
-	if checkScore(initialScore, c.targetVMAF, c.tolerance) {
-		c.logger.Info("found vmaf at initial crf", "vmaf", initialScore, "crf", c.crfInitial)
-		return c.crfInitial, initialScore, nil
-	}
-	if initialScore > c.targetVMAF {
-		c.crfMax = c.crfInitial
-	} else {
-		c.crfMin = c.crfInitial
-	}
-
-	low := 0
-	high := c.crfMin - c.crfMax
-	if high <= 0 {
-		return c.crfInitial, initialScore, nil
-	}
-
-	scores := make([]float64, high+1)
-	if c.crfMax == c.crfInitial {
-		scores[high] = initialScore
-	} else if c.crfMin == c.crfInitial {
-		scores[low] = initialScore
-	}
-
-	if scores[low] == 0 {
-		if scores[low], err = score(ctx, sampleName, c.crfMin); err != nil {
-			return selected, vmaf, err
-		}
-		if checkScore(scores[low], c.targetVMAF, c.tolerance) {
-			c.logger.Info("found vmaf at min crf", "vmaf", scores[low], "crf", c.crfMin)
-			return c.crfMin, scores[low], nil
-		}
-	}
-
-	if scores[high] == 0 {
-		if scores[high], err = score(ctx, sampleName, c.crfMax); err != nil {
-			return selected, vmaf, err
-		}
-		if checkScore(scores[high], c.targetVMAF, c.tolerance) {
-			c.logger.Info("found vmaf at max crf", "vmaf", scores[high], "crf", c.crfMax)
-			return c.crfMax, scores[high], nil
-		}
-	}
-
-	c.logger.Info("initial VMAF range", "low", scores[low], "high", scores[high])
-
-	if scores[high] < c.targetVMAF {
-		c.logger.Info("target vmaf unreachable at max crf, selecting max", "target", c.targetVMAF, "vmaf", scores[high], "crf", c.crfMax)
-		return c.crfMax, scores[high], nil
-	}
-
-	// hybrid bisection/interpolation search
-	// bisection guarantees convergence (halves range each step)
-	// interpolation biases the midpoint toward the expected position
-	// blend: 70% bisection, 30% interpolation to handle VMAF's non-linear CRF relationship
-	var lastPos, curPos, curCRF int
-	for i := range maxSearchIterations {
-		if low >= high {
-			break
-		}
-		if c.targetVMAF < scores[low] || c.targetVMAF > scores[high] {
-			break
-		}
-
-		mid := (low + high) / 2
-
-		// interpolation with division-by-zero guard
-		interp := mid
-		denom := scores[high] - scores[low]
-		if denom > 0 {
-			interp = low + int(math.Round(float64(high-low)*(c.targetVMAF-scores[low])/denom))
-		}
-
-		// blend bisection and interpolation
-		curPos = int(math.Round(0.7*float64(mid) + 0.3*float64(interp)))
-
-		// clamp to valid search range (must make progress)
-		if curPos <= low {
-			curPos = low + 1
-		}
-		if curPos >= high {
-			curPos = high - 1
-		}
-
-		if curPos == lastPos {
-			break
-		}
-
-		curCRF = c.crfMin - curPos
-		c.logger.Info("searching", "iteration", i+1, "position", curPos, "crf", curCRF)
-
-		if scores[curPos], err = score(ctx, sampleName, curCRF); err != nil {
-			return selected, vmaf, err
-		}
-
-		if checkScore(scores[curPos], c.targetVMAF, c.tolerance) {
-			break
-		}
-
-		if scores[curPos] > c.targetVMAF {
-			high = curPos
-		} else {
-			low = curPos
-		}
-		lastPos = curPos
-	}
-
-	selected = curCRF
-	vmaf = scores[curPos]
-	c.logger.Info("found vmaf", "vmaf", vmaf, "crf", selected)
-
-	return selected, vmaf, nil
-}
-
-func (c *CrfSearch) validate() error {
-	if c.crfMin <= c.crfMax {
-		return fmt.Errorf("min crf (%d) must be greater than max crf (%d)", c.crfMin, c.crfMax)
-	}
-	if c.crfInitial < c.crfMax || c.crfInitial > c.crfMin {
-		return fmt.Errorf("initial crf (%d) must be between max (%d) and min (%d)", c.crfInitial, c.crfMax, c.crfMin)
-	}
-	if c.targetVMAF <= 0 || c.targetVMAF > 100 {
-		return fmt.Errorf("target vmaf (%.2f) must be between 0 and 100", c.targetVMAF)
-	}
-	if c.tolerance <= 0 {
-		return fmt.Errorf("tolerance (%.2f) must be positive", c.tolerance)
-	}
-	return nil
-}
-
-func (c *CrfSearch) getScoreFn() func(ctx context.Context, samplePath string, crf int) (float64, error) {
-	if c.scoreFn != nil {
-		return c.scoreFn
-	}
-	return c.runScore
-}
-
-func (c *CrfSearch) runScore(ctx context.Context, samplePath string, crf int) (float64, error) {
-	currentConfig := c.transcodeConfig
-	currentConfig.VideoCRF = crf
-	score, averageBitrateKBPS, maxBitrateKBPS, streamSize, err := NewVMAFEncodeScore(c.logger, currentConfig, samplePath).Run(ctx)
+	res, err := newGridSearch(c.logger, c.params, score).run(ctx)
 	if err != nil {
-		return 0, err
+		return SearchResult{}, err
 	}
-
-	streamSizeKB := message.NewPrinter(language.English).Sprintf("%d", streamSize)
-	c.logger.Info("score result",
-		"score", fmt.Sprintf("%.2f", score),
-		"avgBitrate", fmt.Sprintf("%dKbps", averageBitrateKBPS),
-		"maxBitrate", fmt.Sprintf("%dKbps", maxBitrateKBPS),
-		"bufferSize", fmt.Sprintf("%dKbs", currentConfig.VideoBufferSizeKbps),
-		"fileSize", streamSizeKB+"KB",
-	)
-
-	return score, nil
+	c.logger.Info("search result", "crf", commands.FormatCRF(res.CRF), "vmaf", fmt.Sprintf("%.2f", res.VMAF),
+		"status", res.Status, "scores", res.Scores, "encodes", res.Encodes)
+	return res, nil
 }
 
-func checkScore(vmaf float64, targetVmaf float64, tolerance float64) bool {
-	return math.Abs(vmaf-targetVmaf) < tolerance
+// prepare checks the model and vmaf binary against the source before any
+// encoding, then returns the clip to search on (the source itself, or a scene
+// sample for long sources) and the model the source resolved to. cleanup
+// removes any sample.
+func (c *CrfSearch) prepare(ctx context.Context) (path, model string, cleanup func(), err error) {
+	noop := func() {}
+	info, err := commands.ProbeVideo(ctx, c.logger, c.sourcePath)
+	if err != nil {
+		return "", "", noop, fmt.Errorf("probe source: %w", err)
+	}
+
+	model = commands.SelectModel(c.vmafOpts.Model, info.Width, info.Height, info.FPS)
+	if maxScore := commands.ModelMaxScore(model); c.params.TargetVMAF >= maxScore {
+		return "", "", noop, fmt.Errorf("target vmaf %.2f must be below model %s's maximum of %g",
+			c.params.TargetVMAF, commands.ModelName(model), maxScore)
+	}
+	if err = commands.CheckModelSize(model, info.Width, info.Height); err != nil {
+		return "", "", noop, err
+	}
+	check := c.vmafOpts
+	check.Model = model
+	if err = commands.CheckVMAF(ctx, c.logger, check); err != nil {
+		return "", "", noop, fmt.Errorf("vmaf check failed before searching: %w", err)
+	}
+
+	minDur := c.sceneSampleMinDurSec
+	if minDur == 0 {
+		minDur = defaultSceneSampleMinDurSec
+	}
+	if info.VideoDuration() < minDur {
+		c.logger.Info("source is shorter than the sampling threshold, searching on the full source",
+			"duration", fmt.Sprintf("%.1fs", info.VideoDuration()), "threshold", fmt.Sprintf("%.0fs", minDur))
+		return c.sourcePath, model, noop, nil
+	}
+
+	sample, err := c.createSceneSample(ctx)
+	if err != nil {
+		return "", "", noop, fmt.Errorf("failed to create scene sample: %w", err)
+	}
+	return sample, model, func() { os.Remove(sample) }, nil //nolint:errcheck
 }
 
-func (c *CrfSearch) createSceneSample(ctx context.Context) (*os.File, error) {
-	sampleEncode, err := os.CreateTemp("", "sample_*.mp4")
+func (c *CrfSearch) createSceneSample(ctx context.Context) (string, error) {
+	f, err := os.CreateTemp("", "sample_*"+commands.SampleExt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file for encoding sample: %w", err)
+		return "", fmt.Errorf("failed to create temp file for sample: %w", err)
 	}
+	path := f.Name()
+	_ = f.Close()
 
-	cleanup := func() { os.Remove(sampleEncode.Name()) } //nolint:errcheck
-
-	scenes, fps, err := inspect.DetectScenes(c.logger, ctx, c.sourcePath)
+	scenes, _, err := inspect.DetectScenes(c.logger, ctx, c.sourcePath)
 	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("failed to detect scenes in source, err: %w", err)
+		_ = os.Remove(path)
+		return "", fmt.Errorf("failed to detect scenes in source: %w", err)
 	}
-	if err = commands.NewFfmpegSampler(c.logger, c.sourcePath, sampleEncode.Name(), fps, scenes).Run(ctx); err != nil {
-		cleanup()
-		return nil, fmt.Errorf("failed to sample source, err: %w", err)
+	if err = commands.NewFfmpegSampler(c.logger, c.sourcePath, path, scenes).Run(ctx); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("failed to sample source: %w", err)
 	}
-
-	return sampleEncode, nil
+	return path, nil
 }

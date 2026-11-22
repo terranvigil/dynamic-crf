@@ -6,21 +6,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
+	"strconv"
 
 	"github.com/terranvigil/dynamic-crf/model"
 )
 
 type FfprobeScenes struct {
-	source *os.File
-	log    *slog.Logger
+	sourcePath  string
+	streamIndex int
+	log         *slog.Logger
 }
 
-func NewFfprobeScenes(logger *slog.Logger, source *os.File) *FfprobeScenes {
+// NewFfprobeScenes detects scene cuts in the stream at streamIndex, which
+// should be the one encodes read (-map 0:V:0); movie= alone picks ffmpeg's
+// "best" video stream.
+func NewFfprobeScenes(logger *slog.Logger, sourcePath string, streamIndex int) *FfprobeScenes {
 	return &FfprobeScenes{
-		source: source,
-		log:    logger,
+		sourcePath:  sourcePath,
+		streamIndex: streamIndex,
+		log:         logger,
 	}
 }
 
@@ -32,22 +37,22 @@ func (f *FfprobeScenes) Run(ctx context.Context) (*model.FfprobeFrames, error) {
 		"-hide_banner",
 		"-v", "error",
 		"-show_frames",
-		"-f", "lavfi", "movie=" + f.source.Name() + ",select=gt(scene\\,0.3)",
+		"-f", "lavfi", "movie=" + escapeFilterValue(f.sourcePath) + ":s=" + strconv.Itoa(f.streamIndex) + ",select=gt(scene\\,0.3)",
 		"-of", "json",
 	}
 
-	f.log.Info("running ffprobe scene detection")
+	f.log.Info("running ffprobe scene detection", "path", f.sourcePath)
 
 	cmd := exec.CommandContext(ctx, "ffprobe", args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffprobe scene detection for %s failed, err: %w, message: %s", f.source.Name(), err, stderr.String())
+		return nil, fmt.Errorf("ffprobe scene detection for %s failed, err: %w, message: %s", f.sourcePath, err, stderr.String())
 	}
 
 	response := &model.FfprobeFrames{}
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return nil, fmt.Errorf("ffprobe scene detection for %s failed, unmarshall: err: %w", f.source.Name(), err)
+		return nil, fmt.Errorf("ffprobe scene detection for %s failed, unmarshall: err: %w", f.sourcePath, err)
 	}
 
 	return response, nil

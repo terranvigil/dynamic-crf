@@ -53,6 +53,7 @@ type FfprobeStream struct {
 	ExtradataSize      int               `json:"extradata_size"`
 	Disposition        FfprobeDispostion `json:"disposition"`
 	Tags               FfprobeStreamTag  `json:"tags"`
+	SideDataList       []FfprobeSideData `json:"side_data_list,omitempty"`
 	SampleFmt          string            `json:"sample_fmt,omitempty"`
 	SampleRate         string            `json:"sample_rate,omitempty"`
 	Channels           int               `json:"channels,omitempty"`
@@ -95,6 +96,29 @@ type FfprobeStreamTag struct {
 	Language     string    `json:"language"`
 	HandlerName  string    `json:"handler_name"`
 	VendorID     string    `json:"vendor_id"`
+	// older ffmpeg reports display rotation here
+	Rotate string `json:"rotate,omitempty"`
+	// matroska carries per-stream duration as a tag, e.g. 00:01:00.041000000
+	Duration string `json:"DURATION,omitempty"`
+}
+
+type FfprobeSideData struct {
+	SideDataType string  `json:"side_data_type"`
+	Rotation     float64 `json:"rotation,omitempty"`
+}
+
+// Rotation is the display rotation in degrees, from the display matrix or
+// the legacy rotate tag. ffmpeg applies it when decoding.
+func (s *FfprobeStream) Rotation() float64 {
+	for _, sd := range s.SideDataList {
+		if sd.Rotation != 0 {
+			return sd.Rotation
+		}
+	}
+	if r, err := strconv.ParseFloat(s.Tags.Rotate, 64); err == nil {
+		return r
+	}
+	return 0
 }
 
 type FfprobeFormat struct {
@@ -129,10 +153,12 @@ func (f *FfprobeMetadata) StreamByID(id int) *FfprobeStream {
 	return nil
 }
 
+// VideoStream is the first real video stream, skipping attached cover art,
+// which matches ffmpeg's -map 0:V:0.
 func (f *FfprobeMetadata) VideoStream() *FfprobeStream {
 	for i := range f.Streams {
 		s := f.Streams[i]
-		if s.CodecType == "video" {
+		if s.CodecType == "video" && s.Disposition.AttachedPic == 0 {
 			return &s
 		}
 	}

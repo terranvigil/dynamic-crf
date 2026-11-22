@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -28,32 +28,30 @@ func DetectScenes(logger *slog.Logger, ctx context.Context, sourcePath string) (
 	var sceneFrames *model.FfprobeFrames
 	var metadata *model.FfprobeMetadata
 
-	var source *os.File
-	if source, err = os.Open(sourcePath); err != nil {
-		return scenes, fps, fmt.Errorf("failed to open source: %s, err: %w", sourcePath, err)
-	}
-	defer source.Close() //nolint:errcheck
-
-	if metadata, err = commands.NewFfprobeMetadata(logger, source).Run(ctx); err != nil {
+	if metadata, err = commands.NewFfprobeMetadata(logger, sourcePath).Run(ctx); err != nil {
 		return scenes, fps, fmt.Errorf("failed to inspect source: %s, err: %w", sourcePath, err)
 	}
 	if metadata.VideoStream() == nil {
 		return scenes, fps, errors.New("no video stream found in source")
 	}
 
-	if fps, err = model.FractionToFloat(metadata.VideoStream().RFrameRate); err != nil {
-		return scenes, fps, fmt.Errorf("failed to parse fps from source, found: %s, err: %w", metadata.VideoStream().RFrameRate, err)
+	// the probe's rate, which is the average on variable-rate sources
+	info, err := commands.VideoInfoFromMetadata(metadata, sourcePath)
+	if err != nil {
+		return scenes, fps, err
 	}
-	var streamDuration float64
-	if streamDuration, err = strconv.ParseFloat(metadata.Format.Duration, 64); err != nil {
-		return scenes, fps, fmt.Errorf("failed to parse video duration from source, found: %s, err: %w", metadata.Format.Duration, err)
-	}
+	fps = info.FPS
+	// the video's own length: audio running longer would put scenes past its end
+	streamDuration := info.VideoDuration()
 
-	if sceneFrames, err = commands.NewFfprobeScenes(logger, source).Run(ctx); err != nil {
+	if sceneFrames, err = commands.NewFfprobeScenes(logger, sourcePath, metadata.VideoStream().Index).Run(ctx); err != nil {
 		return scenes, fps, fmt.Errorf("failed to probe source: %s, err: %w", sourcePath, err)
 	}
 
-	frames := sceneFrames.Frames
+	// movie= reports pts including the container's start time, but ffmpeg -ss
+	// seeks relative to it (MPEG-TS often starts at 1.4s or later)
+	startTime, _ := strconv.ParseFloat(metadata.Format.StartTime, 64)
+	frames := rebaseFrames(sceneFrames.Frames, startTime)
 
 	// filter out scenes that are too short
 	filtered := []model.VideoFrame{}
@@ -76,26 +74,37 @@ func DetectScenes(logger *slog.Logger, ctx context.Context, sourcePath string) (
 		return scenes, fps, nil
 	}
 
-	if len(frames) > MaxScenesForSample {
-		logger.Info("reducing scenes", "found", len(frames))
-
-		sort.SliceStable(frames, func(i, j int) bool {
-			return frames[i].Pts < frames[j].Pts
-		})
-
-		// select the most significant scenes
-		sort.SliceStable(frames, func(i, j int) bool {
-			return frames[i].GetSceneScore() < frames[j].GetSceneScore()
-		})
-		frames = frames[:MaxScenesForSample]
-
-		// put them back in time order
-		sort.SliceStable(frames, func(i, j int) bool {
-			return frames[i].Pts < frames[j].Pts
-		})
+	scenes = scenesFromFrames(frames, streamDuration)
+	if len(scenes) > MaxScenesForSample {
+		logger.Info("reducing scenes", "found", len(scenes))
+		scenes = selectScenes(scenes, MaxScenesForSample)
 	}
 
-	scenes = make([]model.Scene, len(frames))
+	logger.Info("scene detection complete", "count", len(scenes))
+	for i, scene := range scenes {
+		logger.Debug("scene", "index", i, "start", fmt.Sprintf("%.2f", scene.StartPTSSec), "duration", fmt.Sprintf("%.2f", scene.Duration), "score", fmt.Sprintf("%.2f", scene.Score))
+	}
+
+	return scenes, fps, nil
+}
+
+// rebaseFrames shifts frame times so they're relative to the container start.
+func rebaseFrames(frames []model.VideoFrame, startTime float64) []model.VideoFrame {
+	if startTime == 0 {
+		return frames
+	}
+	out := make([]model.VideoFrame, len(frames))
+	for i, f := range frames {
+		f.PtsTime = strconv.FormatFloat(f.GetPtsTimeFloat64()-startTime, 'f', 6, 64)
+		out[i] = f
+	}
+	return out
+}
+
+// scenesFromFrames turns scene-change frames (in time order) into scenes that
+// run to the next change, capped at MaxSceneDuration.
+func scenesFromFrames(frames []model.VideoFrame, streamDuration float64) []model.Scene {
+	scenes := make([]model.Scene, len(frames))
 	for i := range frames {
 		scenes[i] = model.Scene{
 			StartPTSSec:        frames[i].GetPtsTimeFloat64(),
@@ -106,21 +115,35 @@ func DetectScenes(logger *slog.Logger, ctx context.Context, sourcePath string) (
 			scenes[i-1].Duration = math.Min(MaxSceneDuration, scenes[i].StartPTSSec-scenes[i-1].StartPTSSec)
 		}
 	}
-	// last scene
-	scenes[len(scenes)-1].Duration = math.Min(MaxSceneDuration, streamDuration-scenes[len(scenes)-1].StartPTSSec)
-
-	logger.Info("scene detection complete", "count", len(scenes))
-	for i, scene := range scenes {
-		logger.Debug("scene", "index", i, "start", fmt.Sprintf("%.2f", scene.StartPTSSec), "duration", fmt.Sprintf("%.2f", scene.Duration), "score", fmt.Sprintf("%.2f", scene.Score))
+	if len(scenes) > 0 {
+		last := &scenes[len(scenes)-1]
+		last.Duration = math.Min(MaxSceneDuration, streamDuration-last.StartPTSSec)
 	}
+	return scenes
+}
 
-	return scenes, fps, nil
+// selectScenes keeps the n scenes with the largest scene-change scores, the
+// sharpest cuts, and returns them in time order. Durations are computed before
+// selection so each scene still ends at its own next cut.
+func selectScenes(scenes []model.Scene, n int) []model.Scene {
+	if len(scenes) <= n {
+		return scenes
+	}
+	picked := slices.Clone(scenes)
+	sort.SliceStable(picked, func(i, j int) bool {
+		return picked[i].Score > picked[j].Score
+	})
+	picked = picked[:n]
+	sort.SliceStable(picked, func(i, j int) bool {
+		return picked[i].StartPTSSec < picked[j].StartPTSSec
+	})
+	return picked
 }
 
 // uniformTemporalSample creates evenly-spaced sample scenes across the video duration
 // when scene detection doesn't yield enough results
 func uniformTemporalSample(duration float64, count int) []model.Scene {
-	sampleDur := math.Min(MaxSceneDuration, MinSceneDuration)
+	sampleDur := MinSceneDuration
 	// ensure we don't exceed total duration
 	if float64(count)*sampleDur > duration {
 		count = int(duration / sampleDur)

@@ -2,6 +2,7 @@
 dynamic-crf
 bin/
 .ffmpeg-build/
+.vmaf-build/
 
 # media files
 *.mp4

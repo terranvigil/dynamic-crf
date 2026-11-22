@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
-# build-ffmpeg-macos.sh — Build FFmpeg from source on macOS with libvmaf.
+# build-ffmpeg-macos.sh - Build FFmpeg from source on macOS.
 #
 # Produces native macOS arm64 binaries at bin/ffmpeg/ with:
-#   x264, x265, SVT-AV1, dav1d, libvpx/VP9, libvmaf, opus
+#   x264, x265, SVT-AV1, dav1d, libvpx/VP9, opus
 #   + VideoToolbox and AudioToolbox hardware acceleration
+#
+# VMAF scoring doesn't go through ffmpeg: dynamic-crf runs the vmaf CLI
+# directly. Build that with scripts/build-vmaf.sh.
 #
 # Requirements:
 #   - Homebrew (arm64, /opt/homebrew)
@@ -36,7 +39,7 @@ fi
 echo "==> Installing dependencies via Homebrew..."
 $BREW install --quiet \
     nasm pkg-config \
-    x264 x265 svt-av1 dav1d libvpx libvmaf opus
+    x264 x265 svt-av1 dav1d libvpx opus
 
 BREW_PREFIX="$($BREW --prefix)"
 
@@ -68,13 +71,11 @@ PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig" \
     --prefix="$BUILD_DIR/install" \
     --enable-gpl \
     --enable-version3 \
-    --enable-nonfree \
     --enable-libx264 \
     --enable-libx265 \
     --enable-libsvtav1 \
     --enable-libdav1d \
     --enable-libvpx \
-    --enable-libvmaf \
     --enable-libopus \
     --enable-videotoolbox \
     --enable-audiotoolbox \
@@ -106,9 +107,6 @@ echo ""
 echo ""
 echo "Encoders:"
 "$OUTPUT_DIR/ffmpeg" -encoders 2>/dev/null | grep -E "libx264|libx265|libsvtav1|libvpx"
-echo ""
-echo "VMAF filter:"
-"$OUTPUT_DIR/ffmpeg" -filters 2>/dev/null | grep libvmaf
 echo ""
 echo "==> Done. Add bin/ffmpeg to your PATH:"
 echo "    export PATH=$OUTPUT_DIR:\$PATH"

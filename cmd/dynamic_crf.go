@@ -3,242 +3,168 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"slices"
-	"strings"
 	"syscall"
 
 	"github.com/terranvigil/dynamic-crf/actions"
 	"github.com/terranvigil/dynamic-crf/commands"
 )
 
-const (
-	actionOptimize = "optimize"
-	actionSearch   = "search"
-	actionEncode   = "encode"
-	actionInspect  = "inspect"
-	actionVmaf     = "vmaf"
-	actionCambi    = "cambi"
-)
-
-var validActions = []string{
-	actionOptimize,
-	actionSearch,
-	actionEncode,
-	actionInspect,
-	actionVmaf,
-	actionCambi,
-}
+// encoders known to take fractional crf
+var fractionalCRFCodecs = map[string]bool{"libx264": true, "libx265": true}
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	if err := run(logger); err != nil {
-		logger.Error("fatal", "error", err)
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
-	var (
-		action                         string
-		maxCRF, minCRF, initCRF, crf   int
-		searchTolerance                float64
-		sourcePath, targetPath         string
-		targetVMAF                     float64
-		codec                          string
-		width, height                  int
-		bitrateKbps                    int
-		minBitrateKbps, maxBitrateKbps int
-		bufferSizeKbps                 int
-		tune                           string
-	)
-
-	const (
-		defaultSearchTolerance = 0.5
-		defaultMaxCRF          = 15
-		defaultMinCRF          = 30
-		defaultInitCRF         = 20
-		defaultTargetVMAF      = 95.0
-		defaultVMAFSpeed       = 5
-	)
-
-	flag.StringVar(&action, "action", "", "action to perform: optimize, search, encode, inspect, vmaf, cambi")
-	flag.StringVar(&action, "a", "", "action to perform: optimize, encode")
-	flag.IntVar(&crf, "crf", 0, "crf value to use for encode action")
-	flag.IntVar(&bitrateKbps, "bitrate", 0, "bitrate value to use for encode action")
-	flag.IntVar(&maxCRF, "maxcrf", defaultMaxCRF, "maximum crf value to search, higher value == lower quality")
-	flag.IntVar(&minCRF, "mincrf", defaultMinCRF, "minimum crf value to search, higher value == lower quality")
-	flag.IntVar(&initCRF, "initialcrf", defaultInitCRF, "initial crf value to search")
-	flag.Float64Var(&searchTolerance, "tolerance", defaultSearchTolerance, "tolerance for search")
-	flag.StringVar(&sourcePath, "input", "", "path to input file")
-	flag.StringVar(&sourcePath, "i", "", "path to input file")
-	flag.StringVar(&targetPath, "output", "", "path to output file or distorted file if calculating vmaf")
-	flag.StringVar(&targetPath, "o", "", "path to output file or distorted file if calculating vmaf")
-	flag.Float64Var(&targetVMAF, "targetvmaf", defaultTargetVMAF, "target vmaf score")
-	flag.StringVar(&codec, "codec", "libx264", "video codec to use")
-	flag.IntVar(&width, "width", 0, "width of output video")
-	flag.IntVar(&width, "w", 0, "width of output video")
-	flag.IntVar(&height, "height", 0, "height of output video")
-	flag.IntVar(&height, "h", 0, "height of output video")
-	flag.IntVar(&maxBitrateKbps, "maxbitrate", 0, "limit peak bitrate of output video")
-	flag.IntVar(&maxBitrateKbps, "mb", 0, "limit peak bitrate of output video")
-	flag.IntVar(&bufferSizeKbps, "buffersize", 0, "hrd buffer size of output video")
-	flag.IntVar(&bufferSizeKbps, "bs", 0, "hrd buffer size of output video")
-	flag.IntVar(&minBitrateKbps, "minbitrate", 0, "limit minimum bitrate of output video")
-	flag.StringVar(&tune, "tune", "", "tune flag for encoder: animation, film, grain, psnr, ssim")
-	flag.StringVar(&tune, "t", "", "tune flag for encoder: animation, film, grain, psnr, ssim")
-
-	flag.Parse()
-
-	if err := validateFlags(action, crf, bitrateKbps, sourcePath, targetPath, tune,
-		targetVMAF, searchTolerance, minCRF, maxCRF, initCRF); err != nil {
-		flag.Usage()
+func run(args []string, stdout, stderr io.Writer) error {
+	o, err := parseFlags(args, stderr)
+	if err != nil {
+		return err
+	}
+	if err = o.validate(); err != nil {
 		return err
 	}
 
-	if strings.HasPrefix(sourcePath, "~/") {
-		dirname, _ := os.UserHomeDir()
-		sourcePath = filepath.Join(dirname, sourcePath[2:])
+	level := slog.LevelInfo
+	if o.verbose {
+		level = slog.LevelDebug
 	}
-	if strings.HasPrefix(targetPath, "~/") {
-		dirname, _ := os.UserHomeDir()
-		targetPath = filepath.Join(dirname, targetPath[2:])
+	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+	for _, d := range o.deprecated {
+		logger.Warn("deprecated flag", "note", d)
+	}
+	if o.search.CRFStep != math.Trunc(o.search.CRFStep) && !fractionalCRFCodecs[o.codec] {
+		logger.Warn("this encoder may round fractional crf, so neighboring grid points can encode identically",
+			"codec", o.codec, "crfstep", o.search.CRFStep)
 	}
 
 	// cancellable context for graceful shutdown on signal
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 
-	cfg := commands.TranscodeConfig{
-		VideoCodec:          codec,
-		Width:               width,
-		Height:              height,
-		VideoCRF:            crf,
-		VideoBitrateKbps:    bitrateKbps,
-		VideoMinBitrateKbps: minBitrateKbps,
-		VideoMaxBitrateKbps: maxBitrateKbps,
-		VideoBufferSizeKbps: bufferSizeKbps,
-		Tune:                tune,
+	result, err := dispatch(ctx, logger, o)
+	if err != nil {
+		return err
 	}
-
-	switch action {
-	case actionOptimize:
-		return actions.NewOptimizedEncoded(logger, cfg, sourcePath, targetPath, targetVMAF, initCRF, minCRF, maxCRF, searchTolerance).Run(ctx)
-	case actionSearch:
-		selectedCRF, vmaf, err := actions.NewCrfSearch(logger, sourcePath, targetVMAF, initCRF, minCRF, maxCRF, searchTolerance, cfg).Run(ctx)
-		if err != nil {
-			return err
-		}
-		logger.Info("search complete", "crf", selectedCRF, "vmaf", fmt.Sprintf("%.2f", vmaf))
-	case actionEncode:
-		if err := commands.NewFfmpegEncode(logger, sourcePath, targetPath, cfg).Run(ctx); err != nil {
-			return err
-		}
-		score, err := commands.NewFfmpegVMAF(logger, sourcePath, targetPath, defaultVMAFSpeed).Run(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to calc vmaf of output: %w", err)
-		}
-		var encodeType string
-		if crf > 0 {
-			encodeType = fmt.Sprintf("crf: %d", crf)
-		} else {
-			encodeType = fmt.Sprintf("bitrate: %d", bitrateKbps)
-		}
-		logger.Info("encode complete", "type", encodeType, "vmaf", fmt.Sprintf("%.2f", score))
-	case actionInspect:
-		metadata, err := commands.NewMediaInfo(logger, sourcePath).Run(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to run mediainfo: %w", err)
-		}
-		inspectPath := sourcePath + "_inspect.json"
-		data, err := json.MarshalIndent(metadata, "", " ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal json: %w", err)
-		}
-		if err = os.WriteFile(inspectPath, data, 0o600); err != nil {
-			return fmt.Errorf("failed to write json: %w", err)
-		}
-		logger.Info("inspect complete", "output", inspectPath)
-	case actionVmaf:
-		referencePath := sourcePath
-		distortedPath := targetPath
-		score, err := commands.NewFfmpegVMAF(logger, distortedPath, referencePath, defaultVMAFSpeed).Run(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to calc vmaf: %w", err)
-		}
-		metadata, err := commands.NewMediaInfo(logger, distortedPath).Run(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get mediainfo of output: %w", err)
-		}
-		tracks := metadata.GetVideoTracks()
-		if len(tracks) == 0 {
-			return fmt.Errorf("no video tracks in distorted file")
-		}
-		averageBitrateKBPS := int(tracks[0].BitRate) / 1000    //nolint:mnd
-		maxBitrateKBPS := int(tracks[0].BitRateMaximum) / 1000 //nolint:mnd
-		streamSizeKB := int(tracks[0].StreamSize) / 1000       //nolint:mnd
-		logger.Info("vmaf complete",
-			"vmaf", fmt.Sprintf("%.2f", score),
-			"avgBitrate", fmt.Sprintf("%dKbps", averageBitrateKBPS),
-			"maxBitrate", fmt.Sprintf("%dKbps", maxBitrateKBPS),
-			"streamSize", fmt.Sprintf("%dKB", streamSizeKB),
-		)
-	case actionCambi:
-		referencePath := sourcePath
-		distortedPath := targetPath
-		max, mean, err := commands.NewCambi(logger, distortedPath, referencePath).Run(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to calc cambi: %w", err)
-		}
-		logger.Info("cambi complete", "max", fmt.Sprintf("%.2f", max), "mean", fmt.Sprintf("%.2f", mean))
+	if o.jsonOut && result != nil {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
 	}
-
 	return nil
 }
 
-func validateFlags(action string, crf, bitrateKbps int, sourcePath, targetPath, tune string,
-	targetVMAF, tolerance float64, minCRF, maxCRF, initCRF int) error {
-	if !slices.Contains(validActions, action) {
-		return fmt.Errorf("invalid action: %q, must be one of: %s", action, strings.Join(validActions, ", "))
+// scoreResult is the JSON shape for the encode and vmaf actions.
+type scoreResult struct {
+	VMAF        float64 `json:"vmaf"`
+	Model       string  `json:"model"`
+	Frames      int     `json:"frames"`
+	BitrateKbps int     `json:"bitrateKbps"`
+	SizeBytes   int64   `json:"sizeBytes"`
+	CRF         float64 `json:"crf,omitempty"`
+	Output      string  `json:"output,omitempty"`
+}
+
+func newScoreResult(r *commands.VMAFResult) scoreResult {
+	return scoreResult{
+		VMAF:        r.Score,
+		Model:       r.Model,
+		Frames:      r.Frames,
+		BitrateKbps: r.Distorted.BitrateKbps(),
+		SizeBytes:   r.Distorted.SizeBytes,
 	}
-	if action == actionEncode {
-		if bitrateKbps <= 0 && crf <= 0 {
-			return fmt.Errorf("bitrate or crf required for encode action")
+}
+
+func dispatch(ctx context.Context, logger *slog.Logger, o *options) (any, error) {
+	cfg := o.transcodeConfig()
+	exact := o.vmaf.WithSubsample(1)
+
+	switch o.action {
+	case actionOptimize:
+		return actions.NewOptimizedEncode(logger, cfg, o.sourcePath, o.targetPath, o.search, o.vmaf).Run(ctx)
+
+	case actionSearch:
+		res, err := actions.NewCrfSearch(logger, o.sourcePath, o.search, cfg, o.vmaf).Run(ctx)
+		if err != nil {
+			return nil, err
 		}
-	} else if crf > 0 || bitrateKbps > 0 {
-		return fmt.Errorf("bitrate and crf flags are only valid for encode action")
-	}
-	if sourcePath == "" {
-		return fmt.Errorf("source path (-i) is required")
-	}
-	if action == actionSearch || action == actionInspect {
-		if targetPath != "" {
-			return fmt.Errorf("target path not allowed for %s action", action)
+		logger.Info("search complete", "crf", commands.FormatCRF(res.CRF), "vmaf", fmt.Sprintf("%.2f", res.VMAF), "status", res.Status)
+		return res, nil
+
+	case actionEncode:
+		// refuse an unscorable source before writing -o
+		info, err := commands.ProbeVideo(ctx, logger, o.sourcePath)
+		if err != nil {
+			return nil, fmt.Errorf("probe source: %w", err)
 		}
-	} else if targetPath == "" || !strings.HasSuffix(targetPath, ".mp4") {
-		return fmt.Errorf("target path (-o) of {name}.mp4 is required")
+		model := commands.SelectModel(o.vmaf.Model, info.Width, info.Height, info.FPS)
+		if err = commands.CheckModelSize(model, info.Width, info.Height); err != nil {
+			return nil, err
+		}
+		check := o.vmaf
+		check.Model = model
+		if err = commands.CheckVMAF(ctx, logger, check); err != nil {
+			return nil, fmt.Errorf("vmaf check failed before encoding: %w", err)
+		}
+		if err := commands.NewFfmpegEncode(logger, o.sourcePath, o.targetPath, cfg).Run(ctx); err != nil {
+			return nil, err
+		}
+		score, err := commands.NewVMAF(logger, o.targetPath, o.sourcePath, exact).Run(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calc vmaf of output: %w", err)
+		}
+		res := newScoreResult(score)
+		res.CRF, res.Output = o.crf, o.targetPath
+		logger.Info("encode complete", "vmaf", fmt.Sprintf("%.2f", res.VMAF), "model", res.Model, "avgBitrate", fmt.Sprintf("%dKbps", res.BitrateKbps))
+		return res, nil
+
+	case actionInspect:
+		metadata, err := commands.NewMediaInfo(logger, o.sourcePath).Run(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to run mediainfo: %w", err)
+		}
+		inspectPath := o.sourcePath + "_inspect.json"
+		data, err := json.MarshalIndent(metadata, "", " ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal json: %w", err)
+		}
+		if err = os.WriteFile(inspectPath, data, 0o600); err != nil {
+			return nil, fmt.Errorf("failed to write json: %w", err)
+		}
+		logger.Info("inspect complete", "output", inspectPath)
+		return map[string]string{"output": inspectPath}, nil
+
+	case actionVmaf:
+		score, err := commands.NewVMAF(logger, o.targetPath, o.sourcePath, exact).Run(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calc vmaf: %w", err)
+		}
+		res := newScoreResult(score)
+		logger.Info("vmaf complete", "vmaf", fmt.Sprintf("%.2f", res.VMAF), "model", res.Model, "frames", res.Frames,
+			"avgBitrate", fmt.Sprintf("%dKbps", res.BitrateKbps))
+		return res, nil
+
+	case actionCambi:
+		res, err := commands.NewCambi(logger, o.targetPath, o.vmaf).Run(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calc cambi: %w", err)
+		}
+		logger.Info("cambi complete", "max", fmt.Sprintf("%.2f", res.Max), "mean", fmt.Sprintf("%.2f", res.Mean))
+		return map[string]float64{"max": res.Max, "mean": res.Mean}, nil
 	}
-	validTunes := []string{"", "animation", "film", "grain", "psnr", "ssim"}
-	if !slices.Contains(validTunes, tune) {
-		return fmt.Errorf("invalid tune value: %q", tune)
-	}
-	if targetVMAF <= 0 || targetVMAF > 100 {
-		return fmt.Errorf("target vmaf (%.2f) must be between 0 and 100", targetVMAF)
-	}
-	if tolerance <= 0 {
-		return fmt.Errorf("tolerance (%.2f) must be positive", tolerance)
-	}
-	if minCRF <= maxCRF {
-		return fmt.Errorf("min crf (%d) must be greater than max crf (%d)", minCRF, maxCRF)
-	}
-	if initCRF < maxCRF || initCRF > minCRF {
-		return fmt.Errorf("initial crf (%d) must be between max (%d) and min (%d)", initCRF, maxCRF, minCRF)
-	}
-	return nil
+	return nil, fmt.Errorf("unhandled action %q", o.action)
 }
